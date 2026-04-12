@@ -12,6 +12,19 @@ dev = [
     "ruff>=0.15",
     "black>=26.0",
 ]
+http    = ["requests>=2.32"]
+s3      = ["boto3>=1.42"]
+sftp    = ["paramiko>=3.4"]
+pdf     = ["pypdf>=6.6"]
+docx    = ["python-docx>=1.2"]
+xlsx    = ["openpyxl>=3.1"]
+pptx    = ["python-pptx>=1.0"]
+storage = ["duckdb>=1.4", "numpy>=2.0", "sqlalchemy>=2.0", "duckdb-engine>=0.13"]
+full    = [
+    "chunkeymonkey[http,s3,sftp]",
+    "chunkeymonkey[pdf,docx,xlsx,pptx]",
+    "chunkeymonkey[storage]",
+]
 
 [build-system]
 requires = ["hatchling"]
