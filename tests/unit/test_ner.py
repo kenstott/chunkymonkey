@@ -374,3 +374,35 @@ class TestMergeMatches:
         # merge_matches itself doesn't filter numerics — that's SpacyMatcher's job.
         # Just confirm the match passes through unmolested when there's no overlap.
         assert any(m.entity_id == "ent_2025" for m in result)
+
+
+class TestSpacyMatcher:
+    pytest.importorskip("spacy")
+
+    def test_entity_types_filter_uses_label_values(self):
+        """SpacyLabel enum .value strings must match spaCy ent.label_ strings.
+
+        Regression: str(SpacyLabel.ORG) returns 'SpacyLabel.ORG' not 'ORG',
+        so building self._types with str() caused all labels to be rejected.
+        """
+        from chunkymonkey.ner import SpacyMatcher, SpacyLabel
+        matcher = SpacyMatcher(
+            model="en_core_web_sm",
+            entity_types=[SpacyLabel.GPE, SpacyLabel.ORG, SpacyLabel.PERSON],
+        )
+        text = "Apple is based in Cupertino and Tim Cook is the CEO."
+        matches = matcher.match(text)
+        entity_types_found = {m.entity_type for m in matches}
+        # At least one ORG or GPE or PERSON should be recognised
+        assert len(matches) > 0, (
+            "SpacyMatcher returned 0 entities — entity_type filter likely uses "
+            "str(SpacyLabel) which returns 'SpacyLabel.ORG' instead of 'ORG'."
+        )
+
+    def test_all_labels_default_finds_entities(self):
+        """Default ALL_SPACY_LABELS should not suppress every entity."""
+        from chunkymonkey.ner import SpacyMatcher
+        matcher = SpacyMatcher(model="en_core_web_sm")
+        text = "Barack Obama was born in Hawaii in 1961."
+        matches = matcher.match(text)
+        assert len(matches) > 0

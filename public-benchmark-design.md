@@ -525,33 +525,57 @@ python -m Evaluation.retrieval_eval \
 
 #### Step 6.1: Build the comparison table
 
-```
-| Strategy                | Fact Ret ACC | Complex Reason ACC | Ctx Summarize ACC | Creative Gen ACC | Average |
-|-------------------------|-------------|-------------------|-------------------|------------------|---------|
-| Contextual chunking     |             |                   |                   |                  |         |
-| RAPTOR (pub.)           | —           | —                 | —                 | —                | 73.58   |
-| HippoRAG (pub.)        | —           | —                 | —                 | —                | 72.64   |
-| GFM-RAG (pub.)         | —           | —                 | —                 | —                | ~70+    |
-| MS GraphRAG (pub.)     | —           | —                 | —                 | —                | ~70+    |
-| LightRAG (pub.)        | —           | —                 | —                 | —                | marginal|
-| DALK (pub.)            | —           | —                 | —                 | —                | DEGRADED|
-| G-Retriever (pub.)     | —           | —                 | —                 | —                | DEGRADED|
-| Vanilla RAG            | 83.2% CR    | lower             | lower             | 40.0% coverage   | —       |
-```
+Replace the placeholder rows below with your own results once the benchmark run is complete.
 
-Note: Published per-task-level breakdowns from the leaderboard should be pulled at execution time from graphrag-bench.github.io, as the leaderboard is dynamically updated. The scores above are from the paper; the leaderboard may contain additional or updated results.
+**GraphRAG-Bench (Medical) — published leaderboard** (scraped from graphrag-bench.github.io, April 2026)
+
+| Rank | Model | Avg | Fact ACC | Fact ROUGE-L | Reason ACC | Reason ROUGE-L | Summ ACC | Summ Cov | Creative ACC | Creative FS | Creative Cov |
+|------|-------|-----|----------|--------------|------------|----------------|----------|----------|--------------|-------------|--------------|
+| 1 | G-reasoner | 73.30 | 68.84 | 44.73 | 75.17 | 29.10 | 77.23 | 60.64 | 72.04 | 53.65 | 48.31 |
+| 2 | AutoPrunedRetriever-llm | 67.00 | 61.25 | 34.69 | 71.59 | 31.11 | 70.14 | 40.59 | 65.02 | 33.06 | 28.62 |
+| 3 | HippoRAG2 | 64.85 | 66.28 | 36.69 | 61.98 | 36.97 | 63.08 | 46.13 | 68.05 | 58.78 | 51.54 |
+| 4 | Fast-GraphRAG | 64.12 | 60.93 | 31.04 | 61.73 | 21.37 | 67.88 | 52.07 | 65.93 | 56.07 | 44.73 |
+| 5 | LightRAG | 62.59 | 63.32 | 37.19 | 61.32 | 24.98 | 63.14 | 51.16 | 67.91 | 78.76 | 51.58 |
+| 6 | RAG (w/ rerank) | 62.43 | 64.73 | 30.75 | 58.64 | 15.57 | 65.75 | 78.54 | 60.61 | 36.74 | 58.72 |
+| 7 | RAG (w/o rerank) | 61.00 | 63.72 | 29.21 | 57.61 | 13.98 | 63.72 | 77.34 | 58.94 | 35.88 | 57.87 |
+| 8 | HippoRAG | 59.08 | 56.14 | 20.95 | 55.87 | 13.57 | 59.86 | 62.73 | 64.43 | 69.21 | 65.56 |
+| 9 | StructRAG | 58.56 | 55.38 | 27.53 | 56.17 | 22.79 | 62.48 | 65.66 | 60.21 | 42.35 | 45.76 |
+| 10 | RAPTOR | 57.10 | 54.07 | 17.93 | 53.20 | 11.73 | 58.73 | 78.28 | 62.38 | 59.98 | 63.63 |
+| 11 | Lazy-GraphRAG | 56.89 | 60.25 | 31.66 | 47.82 | 22.68 | 57.28 | 55.92 | 62.22 | 30.95 | 43.79 |
+| 12 | KGP | 56.33 | 55.53 | 21.34 | 51.53 | 11.69 | 54.51 | 62.40 | 63.77 | 45.25 | 35.55 |
+| 13 | KET-RAG | 47.05 | 60.35 | 31.99 | 39.56 | 19.52 | 45.27 | 29.04 | 43.04 | 33.67 | 31.93 |
+| 14 | MS-GraphRAG (local) | 45.16 | 38.63 | 26.80 | 47.04 | 21.99 | 41.87 | 22.98 | 53.11 | 32.65 | 39.42 |
+| 15 | MS-GraphRAG (global) | 28.56 | 16.42 | 46.00 | 15.61 | 52.75 | 19.82 | — | 20.81 | — | 13.64 |
+| — | **Contextual chunking** | **TBD** | | | | | | | | | |
+
+**GraphRAG-Bench (Novel) — published leaderboard** (scraped from graphrag-bench.github.io, April 2026)
+
+| Rank | Model | Avg | Fact ACC | Fact ROUGE-L | Reason ACC | Reason ROUGE-L | Summ ACC | Summ Cov | Creative ACC | Creative FS | Creative Cov |
+|------|-------|-----|----------|--------------|------------|----------------|----------|----------|--------------|-------------|--------------|
+| 1 | AutoPrunedRetriever-llm | 63.72 | 45.99 | 26.99 | 62.80 | 35.35 | 83.10 | 83.86 | 62.97 | 34.40 | 22.13 |
+| 2 | G-reasoner | 58.94 | 60.07 | 36.93 | 53.92 | 23.00 | 71.28 | 55.60 | 50.48 | 54.24 | 45.44 |
+| 3 | HippoRAG2 | 56.48 | 60.14 | 31.35 | 53.38 | 33.42 | 64.10 | 70.84 | 48.28 | 49.84 | 30.95 |
+| 4 | Fast-GraphRAG | 52.02 | 56.95 | 35.90 | 48.55 | 21.12 | 56.41 | 80.82 | 46.18 | 57.19 | 36.99 |
+| 5 | MS-GraphRAG (local) | 50.93 | 49.29 | 26.11 | 50.93 | 24.09 | 64.40 | 75.58 | 39.10 | 55.44 | 35.65 |
+| 6 | Lazy-GraphRAG | 50.59 | 51.65 | 36.97 | 49.22 | 23.48 | 58.29 | 76.94 | 43.23 | 50.69 | 39.74 |
+| 7 | StructRAG | 49.13 | 53.84 | 26.73 | 46.27 | 23.49 | 54.28 | 63.56 | 42.16 | 52.68 | 36.75 |
+| 8 | RAG (w/ rerank) | 48.35 | 60.92 | 36.08 | 42.93 | 15.39 | 51.30 | 83.64 | 38.26 | 49.21 | 40.04 |
+| 9 | KGP | 48.01 | 54.15 | 24.73 | 46.31 | 16.91 | 51.21 | 64.34 | 40.37 | 52.55 | 34.65 |
+| 10 | RAG (w/o rerank) | 47.93 | 58.76 | 37.35 | 41.35 | 15.12 | 50.08 | 82.53 | 41.52 | 47.46 | 37.84 |
+| 11 | KET-RAG | 47.62 | 55.39 | 27.39 | 36.59 | 25.98 | 52.47 | 69.24 | 46.03 | 36.72 | 33.68 |
+| 12 | LightRAG | 45.09 | 58.62 | 35.72 | 49.07 | 24.16 | 48.85 | 63.05 | 23.80 | 57.28 | 25.01 |
+| 13 | HippoRAG | 44.75 | 52.93 | 26.65 | 38.52 | 11.16 | 48.70 | 85.55 | 38.85 | 71.53 | 38.97 |
+| 14 | MS-GraphRAG (global) | 44.52 | 36.92 | 17.32 | 43.17 | 15.12 | 56.87 | 80.55 | 41.11 | 75.15 | 30.34 |
+| 15 | RAPTOR | 43.24 | 49.25 | 23.74 | 38.59 | 11.66 | 47.10 | 82.33 | 38.01 | 70.85 | 35.88 |
+| — | **Contextual chunking** | **TBD** | | | | | | | | | |
+
+**Key targets for contextual chunking (Medical corpus, beating vanilla RAG):**
+- Fact ACC > 63.72 (RAG w/ rerank baseline)
+- Reason ACC > 58.64 (RAG w/ rerank baseline)
+- Summ ACC > 65.75 (RAG w/ rerank baseline)
+- Average > 62.43 (RAG w/ rerank baseline)
 
 #### Step 6.2: Retrieval comparison
-
-```
-| Strategy                | Level 1 CR | Level 2-3 ER | Level 4 ER | Overall |
-|-------------------------|-----------|-------------|-----------|---------|
-| Contextual chunking     |           |             |           |         |
-| Vanilla RAG (pub.)      | 83.2%     | —           | —         | —       |
-| HippoRAG (pub.)        | —         | 87.9-90.9%  | —         | —       |
-| HippoRAG2 (pub.)       | —         | 85.8-87.8%  | —         | —       |
-| Global-GraphRAG (pub.) | —         | —           | 83.1%     | —       |
-```
 
 #### Step 6.3: Cost comparison
 

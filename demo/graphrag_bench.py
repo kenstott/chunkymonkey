@@ -49,31 +49,36 @@ from chunkymonkey.storage._store import Store
 EMBED_MODEL        = "BAAI/bge-large-en-v1.5"
 EMBED_DIM          = 1024
 GEN_MODEL          = "gpt-4.1"
-GEN_MODEL_TOGETHER = "Qwen/Qwen2.5-72B-Instruct-Turbo"   # paper used 14B; 72B available on Together
+GEN_MODEL_TOGETHER = "Qwen/Qwen2.5-72B-Instruct-Turbo"   # closest serverless Qwen2.5 (14B not available serverless on Together)
 TOGETHER_BASE_URL  = "https://api.together.xyz/v1"
 K             = 5
+K_FETCH       = 20    # candidates to retrieve before reranking (ignored when --rerank is off)
+RERANK_MODEL  = "BAAI/bge-reranker-large"
+SPACY_MODEL   = "en_core_web_sm"
 MIN_CHUNK     = 400
 MAX_CHUNK     = 1200
 DATASET_NAME  = "GraphRAG-Bench/GraphRAG-Bench"
 SUBSETS       = ["medical", "novel"]
 DB_FILENAME   = "chunkymonkey.duckdb"
 
-# Published leaderboard results (from GraphRAG-Bench paper / leaderboard)
-# Scores from: "When to use Graphs in RAG" (ICLR'26), Table 2.
-# Original scale is 0–100%; stored here as 0–1.  Averages are unweighted
-# across the 4 question types (Fact/Complex/Summarize/Creative).
-# Note: paper uses Qwen2.5-14B generator + GPT-4 judge; our run uses
-# GPT-4o-mini for both generation and judging, so numbers are not
-# directly comparable — treat as rough order-of-magnitude reference.
+# Published leaderboard results scraped from graphrag-bench.github.io, April 2026.
+# Avg = mean(Fact ACC, Reason ACC, Summ ACC, Creative ACC) for each subset.
+# Original scale is 0–100%; stored here as 0–1.
+# Our run uses Qwen2.5-14B generator + GPT-4.1 judge.
+# Published leaderboard uses Qwen2.5-14B generator + GPT-4-turbo judge.
 PUBLISHED_BASELINES = {
-    # RAG w/ rerank — best vanilla baseline in the paper
-    "Vanilla RAG (rerank)": {"med_acc": 0.624, "nov_acc": 0.484, "overall": 0.555},
-    # MS GraphRAG local — medical not reported in paper
-    "MS GraphRAG (local)":  {"med_acc": None,  "nov_acc": 0.509, "overall": None},
-    "LightRAG":             {"med_acc": 0.626, "nov_acc": 0.451, "overall": 0.540},
-    "HippoRAG2":            {"med_acc": 0.648, "nov_acc": 0.565, "overall": 0.607},
-    "fast-graphrag":        {"med_acc": 0.641, "nov_acc": 0.520, "overall": 0.582},
-    "RAPTOR":               {"med_acc": 0.553, "nov_acc": 0.432, "overall": 0.493},
+    # ── Top methods ───────────────────────────────────────────────────────────
+    "G-reasoner":               {"med_acc": 0.7330, "nov_acc": 0.5894, "overall": 0.6612},
+    "AutoPrunedRetriever-llm":  {"med_acc": 0.6700, "nov_acc": 0.6372, "overall": 0.6536},
+    "HippoRAG2":                {"med_acc": 0.6485, "nov_acc": 0.5648, "overall": 0.6067},
+    "Fast-GraphRAG":            {"med_acc": 0.6412, "nov_acc": 0.5202, "overall": 0.5807},
+    "LightRAG":                 {"med_acc": 0.6259, "nov_acc": 0.4509, "overall": 0.5384},
+    # ── Vanilla RAG baselines ─────────────────────────────────────────────────
+    "RAG (w/ rerank)":          {"med_acc": 0.6243, "nov_acc": 0.4835, "overall": 0.5539},
+    "RAG (w/o rerank)":         {"med_acc": 0.6100, "nov_acc": 0.4793, "overall": 0.5447},
+    # ── Other methods ─────────────────────────────────────────────────────────
+    "RAPTOR":                   {"med_acc": 0.5710, "nov_acc": 0.4324, "overall": 0.5017},
+    "MS-GraphRAG (local)":      {"med_acc": 0.4516, "nov_acc": 0.5093, "overall": 0.4805},
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -342,6 +347,42 @@ def _generate(question: str, context: str, client, model: str = GEN_MODEL) -> st
     return resp.choices[0].message.content.strip()
 
 
+def _build_enhanced_search(store):
+    """Build EnhancedSearch with SpacyMatcher NER + agglomerative ClusterMap."""
+    from chunkymonkey.ner import SpacyMatcher, EntityIndex
+    from chunkymonkey.cluster import ClusterMap
+    from chunkymonkey.search import EnhancedSearch
+    from chunkymonkey.storage._vector import DuckDBVectorBackend
+
+    print(f"Building EntityIndex with SpacyMatcher({SPACY_MODEL})...")
+    matcher = SpacyMatcher(model=SPACY_MODEL, strip_numeric=True)
+    entity_index = EntityIndex()
+
+    all_chunks = store.vector.get_all_chunks()
+    print(f"  Running NER on {len(all_chunks):,} chunks...")
+    for chunk in all_chunks:
+        embed_content = chunk.embedding_content if chunk.embedding_content else chunk.content
+        chunk_id = DuckDBVectorBackend._generate_chunk_id(
+            chunk.document_name, chunk.chunk_index, embed_content
+        )
+        entity_index.run_ner(chunk_id, chunk.content, matcher)
+
+    entity_index.recompute_scores()
+    print(f"  {entity_index.total_chunks():,} chunks, {len(entity_index.entity_ids()):,} entities")
+
+    print("  Building ClusterMap...")
+    cluster_map = ClusterMap.build(entity_index)
+    print(f"  {cluster_map.cluster_count():,} clusters across {cluster_map.entity_count():,} entities")
+
+    # Disable structural_expansion: _structural_neighbors scans all chunks per query
+    return EnhancedSearch(
+        store,
+        entity_index=entity_index,
+        cluster_map=cluster_map,
+        structural_expansion=False,
+    )
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -353,9 +394,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     data_dir    = out_dir / "data"
     results_dir = out_dir / "results"
     results_dir.mkdir(exist_ok=True)
-    results_f = results_dir / "contextual.jsonl"
-    ckpt_f    = results_dir / "contextual_checkpoint.jsonl"
-    db_path   = data_dir / DB_FILENAME
+    run_name     = getattr(args, "run_name", "contextual")
+    results_f    = results_dir / f"{run_name}.jsonl"
+    ckpt_f       = results_dir / f"{run_name}_checkpoint.jsonl"
+    db_path      = data_dir / DB_FILENAME
+    use_rerank   = getattr(args, "rerank", False)
+    use_enhanced = getattr(args, "enhanced", False)
 
     if not db_path.exists():
         print("No index found. Run 'index' first.")
@@ -410,17 +454,39 @@ def cmd_run(args: argparse.Namespace) -> None:
     q_vecs = all_vecs[pending_indices]
 
     # ── 2. Retrieve context for each question (sequential; DuckDB conn is serialized)
-    print("Retrieving context from index...")
+    fetch_k = K_FETCH if use_rerank else K
+    print(f"Retrieving context from index (fetch_k={fetch_k}, rerank={use_rerank}, enhanced={use_enhanced})...")
+
+    reranker = None
+    if use_rerank:
+        from sentence_transformers import CrossEncoder
+        print(f"Loading reranker: {RERANK_MODEL}...")
+        reranker = CrossEncoder(RERANK_MODEL)
+
     work_items: list[dict] = []
     with Store(db_path, embedding_dim=EMBED_DIM) as store:
+        enhanced_search = _build_enhanced_search(store) if use_enhanced else None
+
         for j, (i, q) in enumerate(pending):
             qid  = q.get("id", f"q{i}")
-            hits = store.vector.search(
-                q_vecs[j], limit=K,
-                query_text=q["question"],
-                include_breadcrumbs=False,
-            )
+            if use_enhanced and enhanced_search is not None:
+                scored = enhanced_search.search(q_vecs[j], k=fetch_k, query_text=q["question"])
+                hits   = [(sc.chunk_id, sc.score, sc.chunk) for sc in scored]
+            else:
+                hits = store.vector.search(
+                    q_vecs[j], limit=fetch_k,
+                    query_text=q["question"],
+                    include_breadcrumbs=False,
+                )
+            if use_rerank and reranker is not None:
+                pairs  = [(q["question"], chunk.content) for _, _, chunk in hits]
+                scores = reranker.predict(pairs)
+                ranked = sorted(zip(scores, hits), key=lambda x: x[0], reverse=True)[:K]
+                hits   = [h for _, h in ranked]
+            elif not use_rerank:
+                hits = hits[:K]
             work_items.append({
+                "_slot":      len(work_items),   # for round-robin endpoint selection
                 "qid":        qid,
                 "question":   q["question"],
                 "source":     q.get("source", q.get("subset", "?")),
@@ -432,24 +498,32 @@ def cmd_run(args: argparse.Namespace) -> None:
                 "gold":       str(q.get("answer", "")),
             })
 
-    print(f"Generating answers with {args.concurrency} parallel workers ({args.gen_model} via {args.gen_provider})...")
+    # Build one client per endpoint (round-robin for parallelism across multiple dedicated endpoints)
+    endpoint_ids: list[str] = getattr(args, "endpoint_ids", None) or [args.gen_model]
     if args.gen_provider == "together":
-        client = openai.OpenAI(
-            api_key=os.environ["TOGETHER_API_KEY"],
-            base_url=TOGETHER_BASE_URL,
-            timeout=120.0,
-        )
+        clients = [
+            openai.OpenAI(api_key=os.environ["TOGETHER_API_KEY"], base_url=TOGETHER_BASE_URL, timeout=120.0)
+            for _ in endpoint_ids
+        ]
     else:
-        client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=60.0)
+        clients = [openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=60.0)]
+        endpoint_ids = [args.gen_model]
+
+    n_endpoints = len(clients)
+    print(f"Generating answers with {args.concurrency} parallel workers across {n_endpoints} endpoint(s)...")
 
     new_results: list[dict] = []
     ckpt_lock   = threading.Lock()
     done_count  = [len(done_ids)]
 
     def _process(item: dict) -> dict:
+        # round-robin client + model selection by item slot index
+        slot   = item["_slot"] % n_endpoints
+        client = clients[slot]
+        model  = endpoint_ids[slot]
         for attempt in range(3):
             try:
-                answer = _generate(item["question"], item["context"], client, args.gen_model)
+                answer = _generate(item["question"], item["context"], client, model)
                 break
             except Exception as exc:
                 if attempt == 2:
@@ -553,7 +627,7 @@ def _llm_judge(prompt: str, client, model: str) -> float:
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
-                max_tokens=4,
+                max_tokens=20,
             )
             text = resp.choices[0].message.content.strip()
             m    = re.search(r"[012]", text)
@@ -594,9 +668,11 @@ def cmd_evalrun(args: argparse.Namespace) -> None:
 
     out_dir     = Path(args.out_dir)
     results_dir = out_dir / "results"
-    results_f   = results_dir / "contextual.jsonl"
-    eval_f      = results_dir / f"eval_{args.judge.replace('-','_').replace('.','_')}.jsonl"
-    ckpt_f      = results_dir / f"eval_ckpt_{args.judge.replace('-','_').replace('.','_')}.jsonl"
+    run_name    = getattr(args, "run_name", "contextual")
+    results_f   = results_dir / f"{run_name}.jsonl"
+    judge_slug  = args.judge.replace('-','_').replace('.','_')
+    eval_f      = results_dir / f"eval_{run_name}_{judge_slug}.jsonl"
+    ckpt_f      = results_dir / f"eval_ckpt_{run_name}_{judge_slug}.jsonl"
 
     if not results_f.exists():
         print("No results found. Run 'run' first.")
@@ -748,7 +824,12 @@ def cmd_report(args: argparse.Namespace) -> None:
     out_dir     = Path(args.out_dir)
     results_dir = out_dir / "results"
 
-    eval_files = sorted(results_dir.glob("eval_*.jsonl"))
+    # Exclude checkpoint files; sort by modification time (oldest first)
+    eval_files = sorted(
+        (f for f in results_dir.glob("eval_*.jsonl")
+         if not f.stem.startswith("eval_ckpt_")),
+        key=lambda f: f.stat().st_mtime,
+    )
     if not eval_files:
         print("No evaluation files found. Run 'evalrun' first.")
         return
@@ -763,12 +844,16 @@ def cmd_report(args: argparse.Namespace) -> None:
         print(f"\nJudge: {judge}  ({len(evals)} questions evaluated)")
         _print_eval_summary(evals)
 
+    # Use most recently modified eval file for comparison table
+    latest_eval = max(eval_files, key=lambda f: f.stat().st_mtime)
+
     print("\n── Comparison vs Published Leaderboard ──")
-    print("(Published scores from GraphRAG-Bench leaderboard; fill in when available)")
+    judge_name = latest_eval.stem.replace("eval_", "").replace("_", "-")
+    print(f"(Using: {latest_eval.name} — judge: {judge_name})")
     print(f"\n  {'Strategy':<24}  {'Med Acc':>8}  {'Nov Acc':>8}  {'Overall':>8}")
     print("  " + "─" * 56)
     if eval_files:
-        evals = [json.loads(line) for line in open(eval_files[-1])]
+        evals = [json.loads(line) for line in open(latest_eval)]
         med_evals = [e for e in evals if e["source"] == "Medical"]
         nov_evals = [e for e in evals if e["source"] != "Medical"]
         med_acc = sum(e["accuracy"] for e in med_evals) / max(1, len(med_evals))
@@ -780,7 +865,116 @@ def cmd_report(args: argparse.Namespace) -> None:
         nov = f"{scores['nov_acc']:.3f}" if scores["nov_acc"] is not None else "   —"
         ov  = f"{scores['overall']:.3f}" if scores["overall"] is not None else "   —"
         print(f"  {name:<24}  {med:>8}  {nov:>8}  {ov:>8}")
-    print("\n  * Paper uses Qwen2.5-14B generator + GPT-4 judge; ours uses GPT-4o-mini for both.")
+    print(f"\n  * Leaderboard (graphrag-bench.github.io, Apr 2026): Qwen2.5-14B generator + GPT-4-turbo judge.")
+    print(f"  * Our run: Qwen2.5-14B generator + {judge_name} judge.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Together dedicated endpoint lifecycle
+# ─────────────────────────────────────────────────────────────────────────────
+
+def cmd_use_endpoints(args: argparse.Namespace) -> None:
+    """Run benchmark using pre-existing Together dedicated endpoints."""
+    import types
+    run_name = getattr(args, "run_name", "contextual")
+    rerank   = getattr(args, "rerank", False)
+    enhanced = getattr(args, "enhanced", False)
+    run_args = types.SimpleNamespace(
+        out_dir=args.out_dir,
+        gen_provider="together",
+        gen_model=args.endpoint_ids[0],
+        endpoint_ids=args.endpoint_ids,
+        concurrency=args.concurrency * len(args.endpoint_ids),
+        limit=None,
+        run_name=run_name,
+        rerank=rerank,
+        enhanced=enhanced,
+    )
+    cmd_run(run_args)
+
+    eval_args = types.SimpleNamespace(
+        out_dir=args.out_dir,
+        judge=args.judge,
+        limit=None,
+        concurrency=20,
+        run_name=run_name,
+    )
+    cmd_evalrun(eval_args)
+
+
+def cmd_provision(args: argparse.Namespace) -> None:
+    """Create N Together dedicated endpoints in parallel, run benchmark, stop all."""
+    import time
+    import types
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from together import Together
+    from together.types.autoscaling_param import AutoscalingParam
+
+    together_client = Together(api_key=os.environ["TOGETHER_API_KEY"])
+    n = args.num_endpoints
+
+    # Store (id, name) tuples — API calls need id, generation needs name
+    def _create_one(i: int) -> tuple[str, str]:
+        ep = together_client.endpoints.create(
+            model=args.model,
+            display_name=f"{args.model.replace('/', '_')}_{i}",
+            hardware=args.hardware,
+            autoscaling=AutoscalingParam(min_replicas=1, max_replicas=1),
+        )
+        return (ep.id, ep.name)
+
+    print(f"Creating {n} dedicated endpoint(s) for {args.model} on {args.hardware}...")
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        ep_tuples = list(ex.map(_create_one, range(n)))
+    endpoint_ids   = [t[0] for t in ep_tuples]   # internal IDs for lifecycle ops
+    endpoint_names = [t[1] for t in ep_tuples]   # names for API model param
+    print(f"Endpoints created (ids): {endpoint_ids}")
+    print(f"Endpoint names: {endpoint_names}")
+
+    def _wait_one(eid: str) -> bool:
+        for _ in range(120):
+            time.sleep(10)
+            state = getattr(together_client.endpoints.retrieve(eid), "state", "unknown")
+            print(f"  {eid[:20]}… [{state}]", flush=True)
+            if state == "STARTED":
+                return True
+        return False
+
+    print("Waiting for all endpoints to be ready...")
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        ready = list(ex.map(_wait_one, endpoint_ids))
+
+    failed = [eid for eid, ok in zip(endpoint_ids, ready) if not ok]
+    for eid in failed:
+        together_client.endpoints.update(eid, state="STOPPED")
+        endpoint_ids.remove(eid)
+
+    if not endpoint_ids:
+        print("No endpoints became ready. Aborting.")
+        return
+
+    print(f"\n{len(endpoint_ids)} endpoint(s) ready. Starting benchmark...")
+
+    try:
+        args.gen_provider  = "together"
+        args.gen_model     = endpoint_names[0]   # fallback for single-endpoint path
+        args.endpoint_ids  = endpoint_names       # names are used as model param
+        args.concurrency   = args.concurrency * len(endpoint_names)
+        args.limit         = None
+        cmd_run(args)
+
+        eval_args = types.SimpleNamespace(
+            out_dir=args.out_dir,
+            judge="gpt-4.1",
+            limit=None,
+            concurrency=20,
+        )
+        cmd_evalrun(eval_args)
+    finally:
+        print("\nStopping all endpoints...")
+        for eid in endpoint_ids:
+            together_client.endpoints.update(eid, state="STOPPED")
+            print(f"  Stopped {eid}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -822,6 +1016,12 @@ def _make_parser() -> argparse.ArgumentParser:
                    help="API provider for generation: openai or together (default: openai)")
     p.add_argument("--concurrency",   type=int, default=20,
                    help="Parallel workers (default: 20)")
+    p.add_argument("--run-name",      default="contextual",
+                   help="Output file prefix (default: contextual)")
+    p.add_argument("--rerank",        action="store_true",
+                   help=f"Rerank top-{K_FETCH} candidates to top-{K} with {RERANK_MODEL}")
+    p.add_argument("--enhanced",      action="store_true",
+                   help=f"Use NER+cluster EnhancedSearch (SpacyMatcher/{SPACY_MODEL} + agglomerative clustering)")
     p.set_defaults(func=cmd_run)
 
     # evalrun (generic)
@@ -832,6 +1032,8 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit",       type=int, default=None, metavar="N")
     p.add_argument("--concurrency", type=int, default=20,
                    help="Parallel judge workers (default: 20)")
+    p.add_argument("--run-name",    default="contextual",
+                   help="Results file prefix to evaluate (default: contextual)")
     p.set_defaults(func=cmd_evalrun)
 
     # eval — shortcut: GPT-4o-mini judge
@@ -840,6 +1042,8 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit",       type=int, default=None, metavar="N")
     p.add_argument("--concurrency", type=int, default=20,
                    help="Parallel judge workers (default: 20)")
+    p.add_argument("--run-name",    default="contextual",
+                   help="Results file prefix to evaluate (default: contextual)")
     p.set_defaults(func=cmd_evalrun, judge="gpt-4o-mini")
 
     # final — shortcut: GPT-4.1 judge
@@ -848,7 +1052,38 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit",       type=int, default=None, metavar="N")
     p.add_argument("--concurrency", type=int, default=20,
                    help="Parallel judge workers (default: 20)")
+    p.add_argument("--run-name",    default="contextual",
+                   help="Results file prefix to evaluate (default: contextual)")
     p.set_defaults(func=cmd_evalrun, judge="gpt-4.1")
+
+    # use-endpoints — run benchmark against existing Together dedicated endpoints
+    p = sub.add_parser("use-endpoints", help="Run benchmark using existing Together dedicated endpoints")
+    p.add_argument("endpoint_ids", nargs="+", metavar="ENDPOINT_ID",
+                   help="One or more Together dedicated endpoint IDs")
+    p.add_argument("--out-dir",     default="/tmp/grb", metavar="DIR")
+    p.add_argument("--concurrency", type=int, default=20,
+                   help="Workers per endpoint (default: 20, total = N * 20)")
+    p.add_argument("--judge",       default="gpt-4.1")
+    p.add_argument("--run-name",    default="contextual",
+                   help="Output file prefix (default: contextual)")
+    p.add_argument("--rerank",      action="store_true",
+                   help=f"Rerank top-{K_FETCH} candidates to top-{K} with {RERANK_MODEL}")
+    p.add_argument("--enhanced",    action="store_true",
+                   help=f"Use NER+cluster EnhancedSearch ({SPACY_MODEL} + agglomerative clustering)")
+    p.set_defaults(func=cmd_use_endpoints)
+
+    # provision — create Together dedicated endpoint, run benchmark, stop endpoint
+    p = sub.add_parser("provision", help="Create Together dedicated endpoint, run benchmark, stop endpoint")
+    p.add_argument("--out-dir",     default="/tmp/grb", metavar="DIR")
+    p.add_argument("--model",       default="Qwen/Qwen2.5-14B-Instruct",
+                   help="Model to deploy (default: Qwen/Qwen2.5-14B-Instruct)")
+    p.add_argument("--hardware",       default="2x_nvidia_h100_80gb_sxm",
+                   help="Together hardware tier (default: 2x_nvidia_h100_80gb_sxm)")
+    p.add_argument("--num-endpoints",  type=int, default=1,
+                   help="Number of parallel dedicated endpoints (default: 1)")
+    p.add_argument("--concurrency",    type=int, default=20,
+                   help="Workers per endpoint (default: 20, total = N * 20)")
+    p.set_defaults(func=cmd_provision)
 
     # report
     p = sub.add_parser("report", help="Print comparison table vs published leaderboard")
