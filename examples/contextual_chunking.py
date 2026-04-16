@@ -1,9 +1,16 @@
+# Copyright (c) 2025 Kenneth Stott. MIT License.
+# Canary: 3b668873-ceda-4c0e-8dc1-814a2da8d5b8
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Contextual chunking — the thesis in action.
 
 Shows how enrich_chunks() adds section breadcrumbs to embedding_content
 while leaving the original content untouched.
 """
-from chunkeymonkey import chunk_document, enrich_chunks
+from chunkymonkey import chunk_document, enrich_chunks
 
 SAMPLE = """
 # Annual Report 2024

@@ -9,3 +9,8 @@ build/
 .mypy_cache/
 htmlcov/
 .coverage
+.canary_registry.json
+/.env
+.DS_Store
+.idea/
+.claude/

@@ -1,5 +1,12 @@
+# Copyright (c) 2025 Kenneth Stott. MIT License.
+# Canary: 8b15486c-73ce-4da3-b9da-9980fbc8b362
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """
-Contextual vs Naive RAG — demonstration of the chunkeymonkey thesis.
+Contextual vs Naive RAG — demonstration of the chunkymonkey thesis.
 
 Loads three documents of different structures:
   - ops_report.md:      repeated section names across geographic regions
@@ -12,10 +19,10 @@ Shows two effects:
   2. CLUSTERING — contextual chunks from the same section are more similar
                   to each other than to chunks from other sections.
 
-Requires only chunkeymonkey core (zero external dependencies).
+Requires only chunkymonkey core (zero external dependencies).
 
 Usage:
-    cd /path/to/chunkeymonkey
+    cd /path/to/chunkymonkey
     python demo/contextual_vs_naive.py
 """
 from __future__ import annotations
@@ -25,8 +32,10 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from chunkeymonkey import DocumentLoader
-from chunkeymonkey.models import DocumentChunk
+import numpy as np
+
+from chunkymonkey import DocumentLoader
+from chunkymonkey.models import DocumentChunk
 
 _HERE = Path(__file__).parent
 DOCS_DIR = _HERE / "docs"
@@ -77,6 +86,32 @@ def _retrieve(
         key=lambda x: x[0],
         reverse=True,
     )[:k]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MMR helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _np_unit(vecs: list[list[float]]) -> np.ndarray:
+    """Convert TF-IDF list-of-lists to a unit-norm (L2) numpy float32 array."""
+    arr = np.array(vecs, dtype=np.float32)
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return arr / norms
+
+def _mmr(idx: list[int], qv: np.ndarray, ref: np.ndarray) -> float:
+    """Mean Marginal Relevance: mean( sim(chunk, query) − mean_pairwise_sim ).
+    High = cohort is relevant AND non-redundant — better for LLM synthesis.
+    ref should be unit-norm; qv should be unit-norm.
+    """
+    if len(idx) < 2:
+        return float(ref[idx[0]] @ qv) if idx else 0.0
+    sub = ref[idx]                               # (k, D)
+    q_sim = sub @ qv                             # (k,)
+    pair = sub @ sub.T                           # (k, k)
+    k = len(idx)
+    redundancy = (pair.sum(axis=1) - 1.0) / (k - 1)
+    return float((q_sim - redundancy).mean())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -180,7 +215,7 @@ def main() -> None:
         raise FileNotFoundError(f"No .md files found in {DOCS_DIR}")
 
     print("=" * 72)
-    print("chunkeymonkey — Contextual vs Naive RAG Demo")
+    print("Chunky Monkey — Contextual vs Naive RAG Demo")
     print("=" * 72)
     print(f"Loading {len(docs)} document(s) from {DOCS_DIR.name}/")
     for d in docs:
@@ -328,6 +363,67 @@ def main() -> None:
         print(f"  {doc_name}  ({len(chunks)} chunks)")
         for sec, cnt in top_sections.most_common():
             print(f"    {cnt:3d}×  {sec!r}")
+    print()
+
+    # ── Part 3: MMR Cohort Quality ────────────────────────────────────────────
+    print("━" * 72)
+    print("PART 3 — MMR COHORT QUALITY  (Mean Marginal Relevance)")
+    print("━" * 72)
+    print()
+    print("MMR = mean( sim(chunk, query) − mean_pairwise_sim_within_cohort )")
+    print("High MMR = cohort is relevant AND non-redundant — better for LLM synthesis.")
+    print("Naive retrieval uses naive TF-IDF space; contextual uses ctx TF-IDF space.")
+    print("Both cohorts evaluated in shared naive space for fair comparison.")
+    print()
+
+    K_MMR = 5
+    naive_np = _np_unit(naive_vecs)
+    ctx_np   = _np_unit(ctx_vecs)
+
+    naive_mmr_scores: list[float] = []
+    ctx_mmr_scores:   list[float] = []
+
+    for query, _kws, _reason in QUERIES:
+        # Naive: retrieve and evaluate in naive space
+        qv_n = np.array(_vec(query, naive_vocab, naive_idf), dtype=np.float32)
+        n_norm = float(np.linalg.norm(qv_n))
+        if n_norm > 0:
+            qv_n /= n_norm
+        n_scores = naive_np @ qv_n
+        n_idx = list(np.argsort(n_scores)[::-1][:K_MMR])
+
+        # Contextual: retrieve in ctx space, evaluate in naive space
+        qv_c = np.array(_vec(query, ctx_vocab, ctx_idf), dtype=np.float32)
+        c_norm = float(np.linalg.norm(qv_c))
+        if c_norm > 0:
+            qv_c /= c_norm
+        c_scores = ctx_np @ qv_c
+        c_idx = list(np.argsort(c_scores)[::-1][:K_MMR])
+
+        n_mmr = _mmr(n_idx, qv_n, naive_np)
+        c_mmr = _mmr(c_idx, qv_n, naive_np)   # evaluate ctx cohort in naive space
+
+        naive_mmr_scores.append(n_mmr)
+        ctx_mmr_scores.append(c_mmr)
+
+        delta = c_mmr - n_mmr
+        if delta > 0.002:
+            verdict = f"CONTEXTUAL  Δ={delta:+.4f}"
+        elif delta < -0.002:
+            verdict = f"naive       Δ={delta:+.4f}"
+        else:
+            verdict = f"tied        Δ={delta:+.4f}"
+        print(f"  {query[:55]!r:<57}  naive={n_mmr:.4f}  ctx={c_mmr:.4f}  → {verdict}")
+
+    nq = len(QUERIES)
+    print()
+    print("─" * 72)
+    n_avg = sum(naive_mmr_scores) / nq
+    c_avg = sum(ctx_mmr_scores) / nq
+    print(f"  Mean MMR @{K_MMR}:  naive={n_avg:.4f}   contextual={c_avg:.4f}   Δ={c_avg - n_avg:+.4f}")
+    print(f"  Contextual higher MMR: {sum(c > v + 0.002 for c, v in zip(ctx_mmr_scores, naive_mmr_scores))}/{nq} queries")
+    print(f"  Naive higher MMR:      {sum(v > c + 0.002 for c, v in zip(ctx_mmr_scores, naive_mmr_scores))}/{nq} queries")
+    print(f"  Tied:                  {sum(abs(c - v) <= 0.002 for c, v in zip(ctx_mmr_scores, naive_mmr_scores))}/{nq} queries")
     print()
 
 

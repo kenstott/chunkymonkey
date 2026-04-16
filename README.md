@@ -1,32 +1,71 @@
-# chunkeymonkey
+# Chunky Monkey
 
 > A dairy-free RAG pipeline for delicious semantic similarity, clustering and NER.
 > No artificial embeddings. No factory-farm vector stores. Sustainably harvested tokens.
 
 ---
 
-## The thesis
+## The problem with naive chunking
 
-Naive RAG pipelines embed raw chunk content, losing the document structure that gives the
-content meaning. A table of numbers is ambiguous on its own — it only makes sense in the
-context of its heading hierarchy. chunkeymonkey enriches each chunk with a section
-breadcrumb (`"Section: Methods > Table 1"`) prepended to the text that gets embedded,
-while leaving the original `content` field untouched. This small change consistently
-improves retrieval precision, clustering coherence, and NER quality because the embedding
-encodes both *what* the text says and *where in the document it lives*.
+Most RAG pipelines embed raw chunk content and nothing else. This works when every
+chunk contains enough distinctive vocabulary to describe itself. That is a narrow
+special case.
+
+In practice, almost every document type you want to retrieve from has repeating
+structure:
+
+- **Technical documentation** — every function reference has `Parameters`, `Returns`,
+  `Raises` sections with the same words across every function in every library
+- **Code** — every `__init__`, test setup, error handler, and config block shares
+  vocabulary across the entire codebase
+- **Contracts** — indemnification, limitation of liability, and governing law clauses
+  are assembled from a shared clause library; the boilerplate is identical across
+  every agreement
+- **Regulatory filings** — every 10-K has the same Items in the same order; every
+  company's Controls and Procedures section (Item 9A) is near-verbatim identical
+- **Clinical protocols** — ECOG performance criteria, RECIST endpoints, and organ
+  function thresholds appear word-for-word across hundreds of trials
+- **Academic papers** — Abstract, Introduction, Methods, Results, Discussion; the
+  heading hierarchy is fixed by convention
+
+When sections share vocabulary, the embedding vectors for chunks from different
+documents — or different sections of the same document — are indistinguishable.
+Retrieval returns the wrong chunk, from the wrong document, for the wrong reason.
+
+The fix is simple: the document name and section path are known at chunk time.
+Put them in the text that gets embedded.
+
+```
+Document: techcorp_msa_2024
+Section: Limitation of Liability
+
+IN NO EVENT SHALL EITHER PARTY'S AGGREGATE LIABILITY…
+```
+
+This is strictly better than embedding the chunk alone. If the content is already
+distinctive, the prefix adds a few redundant tokens and costs nothing. If the
+content is ambiguous — which it usually is — the prefix is the only thing that
+makes the embedding retrievable. There is no downside.
 
 ---
 
-## Features
+## What Chunky Monkey does
 
-- **Zero mandatory dependencies** — stdlib only for core chunking and context enrichment
-- **Transports** — local filesystem, HTTP/HTTPS, S3/S3A, FTP, SFTP — plug in more (SharePoint, Confluence, Notion)
-- **Extractors** — PDF, DOCX, XLSX, PPTX, HTML, Markdown, plain text — plug in more (audio, images, JIRA exports)
-- **Storage** — DuckDB VSS (HNSW) vector search + SQLAlchemy relational metadata store
-- **Hybrid search** — cosine similarity + BM25 full-text search with Reciprocal Rank Fusion merge
-- **Paragraph-aware splitting** — chunks never break mid-paragraph
-- **Table and list detection** — pipe-delimited rows and list items stay atomic
-- **Large table continuation markers** — oversized tables split at row boundaries with `[TABLE:start]` / `[TABLE:cont]` / `[TABLE:end]` for clean reassembly
+Chunky Monkey is a document chunking and contextual enrichment pipeline. It:
+
+1. **Fetches** documents from local disk, HTTP/HTTPS, S3, FTP, SFTP, or any custom
+   source (SharePoint, Confluence, Google Drive, Notion)
+2. **Extracts** text from PDF, DOCX, XLSX, PPTX, HTML, Markdown, plain text, SEC
+   EDGAR inline XBRL, or any custom format
+3. **Chunks** into semantically coherent pieces — never breaking mid-paragraph,
+   keeping tables and lists atomic, tracking the full heading hierarchy
+4. **Enriches** each chunk: sets `embedding_content` to
+   `"Document: {name}\nSection: {path}\n\n{content}"` before it reaches your
+   embedding model
+
+The original `content` field is never modified. `embedding_content` is what you
+embed. Everything downstream — your embedding model, vector store, retrieval
+logic — is unchanged.
 
 ---
 
@@ -34,27 +73,20 @@ encodes both *what* the text says and *where in the document it lives*.
 
 Core (no optional dependencies):
 ```bash
-pip install chunkeymonkey
+pip install chunkymonkey
 ```
 
 With specific extras:
 ```bash
-pip install "chunkeymonkey[http]"       # HTTP/HTTPS transport
-pip install "chunkeymonkey[s3]"         # Amazon S3 transport
-pip install "chunkeymonkey[sftp]"       # SFTP transport
-pip install "chunkeymonkey[pdf]"        # PDF extraction
-pip install "chunkeymonkey[docx]"       # DOCX extraction
-pip install "chunkeymonkey[xlsx]"       # XLSX extraction
-pip install "chunkeymonkey[pptx]"       # PPTX extraction
-pip install "chunkeymonkey[storage]"    # DuckDB vector store
-pip install "chunkeymonkey[full]"       # Everything
-```
-
-For development:
-```bash
-git clone https://github.com/kennethstott/chunkeymonkey
-cd chunkeymonkey
-pip install -e ".[dev]"
+pip install "chunkymonkey[http]"       # HTTP/HTTPS transport
+pip install "chunkymonkey[s3]"         # Amazon S3 transport
+pip install "chunkymonkey[sftp]"       # SFTP transport
+pip install "chunkymonkey[pdf]"        # PDF extraction
+pip install "chunkymonkey[docx]"       # DOCX extraction
+pip install "chunkymonkey[xlsx]"       # XLSX extraction
+pip install "chunkymonkey[pptx]"       # PPTX extraction
+pip install "chunkymonkey[storage]"    # DuckDB vector store
+pip install "chunkymonkey[full]"       # Everything
 ```
 
 ---
@@ -62,44 +94,28 @@ pip install -e ".[dev]"
 ## Quick start
 
 ```python
-from chunkeymonkey import chunk_document, enrich_chunks
+from chunkymonkey import DocumentLoader
 
-# 1. Chunk a document
-chunks = chunk_document(
-    name="annual_report.md",
-    content=open("annual_report.md").read(),
-    chunk_size=1500,
-    table_chunk_limit=800,
-)
+loader = DocumentLoader()   # context_strategy="prefix" is the default
 
-# 2. Enrich chunks with section breadcrumbs for embedding
-enriched = enrich_chunks(chunks, strategy="prefix")
+# Local file, URL, or raw bytes — same interface
+chunks = loader.load("/path/to/report.pdf")
+chunks = loader.load("https://example.com/docs/api.html")
+chunks = loader.load_bytes(pdf_bytes, name="report", doc_type="pdf")
+chunks = loader.load_text("Paragraph one.\n\nParagraph two.", name="notes")
 
-for chunk in enriched:
-    # chunk.content        — original text (for display, storage)
-    # chunk.embedding_content — "Section: ...\n\noriginal text" (for embedding)
-    print(chunk.chunk_index, chunk.section, len(chunk.embedding_content))
+for chunk in chunks:
+    # chunk.content           — original text, unchanged (for display, storage)
+    # chunk.embedding_content — "Document: ...\nSection: ...\n\n..." (embed this)
+    # chunk.section           — "Item 1A.  Risk Factors" (metadata, not in content)
+    # chunk.document_name     — "aapl_10k_2025" (metadata, not in content)
+    embed(chunk.embedding_content)
 ```
 
-Using `DocumentLoader` for the full pipeline:
-
-```python
-from chunkeymonkey import DocumentLoader
-
-loader = DocumentLoader(chunk_size=1500, context_strategy="prefix")
-
-# From a local file
-chunks = loader.load("/path/to/document.pdf")
-
-# From a URL (requires pip install chunkeymonkey[http])
-chunks = loader.load("https://example.com/report.html")
-
-# From raw bytes
-chunks = loader.load_bytes(pdf_bytes, "report.pdf", doc_type="pdf")
-
-# From pre-extracted text
-chunks = loader.load_text("Paragraph one.\n\nParagraph two.", "notes.txt")
-```
+The section path and document name appear in both `chunk.section` / `chunk.document_name`
+(as metadata, for filtering and display) **and** in `embedding_content` (as text, for
+disambiguation during vector search). These are separate concerns. The metadata is
+always present; `embedding_content` is what makes retrieval accurate.
 
 ---
 
@@ -107,20 +123,20 @@ chunks = loader.load_text("Paragraph one.\n\nParagraph two.", "notes.txt")
 
 ```
 URI
- |
- v
-Transport (LocalTransport / HttpTransport / S3Transport / ...)
- |  fetch(uri) -> FetchResult(data: bytes, detected_mime, source_path)
- v
-Extractor (PdfExtractor / HtmlExtractor / TextExtractor / ...)
- |  extract(data) -> str
- v
+ │
+ ▼
+Transport  (Local / HTTP / S3 / FTP / SFTP / custom)
+ │  fetch(uri) → FetchResult(data: bytes, detected_mime, source_path)
+ ▼
+Extractor  (PDF / DOCX / XLSX / PPTX / HTML / Markdown / EDGAR / custom)
+ │  extract(data) → str
+ ▼
 chunk_document(name, text, chunk_size, table_chunk_limit)
- |  -> List[DocumentChunk]  (content, section, chunk_index, ...)
- v
+ │  → list[DocumentChunk]  (content, section, document_name, …)
+ ▼
 enrich_chunks(chunks, strategy="prefix")
- |  -> List[DocumentChunk]  (+ embedding_content set on each)
- v
+ │  → list[DocumentChunk]  (+ embedding_content on each chunk)
+ ▼
 Your embedding model / vector store
 ```
 
@@ -133,13 +149,13 @@ Your embedding model / vector store
 | Field | Type | Description |
 |---|---|---|
 | `document_name` | `str` | Source document name |
-| `content` | `str` | Chunk text (original, unchanged) |
-| `section` | `str | None` | Breadcrumb path of enclosing headings (`"Intro > Background"`) |
+| `content` | `str` | Chunk text — original, never modified |
+| `section` | `str \| None` | Breadcrumb of enclosing headings (`"Methods > Table 1"`) |
 | `chunk_index` | `int` | Zero-based position within the document |
-| `source_offset` | `int | None` | Byte offset of chunk start in original content |
-| `source_length` | `int | None` | Byte length of chunk content |
-| `embedding_content` | `str | None` | Set by `enrich_chunks()`; what actually gets embedded |
-| `chunk_type` | `str` | `"document"` | `"schema"` | `"api"` |
+| `source_offset` | `int \| None` | Character offset of chunk start in source text |
+| `source_length` | `int \| None` | Character length of chunk content |
+| `embedding_content` | `str \| None` | Set by `enrich_chunks()` — embed this, not `content` |
+| `chunk_type` | `str` | `"document"`, `"schema"`, or `"api"` |
 
 ### `chunk_document`
 
@@ -152,9 +168,9 @@ chunk_document(
 ) -> list[DocumentChunk]
 ```
 
-Split a text document into semantically coherent chunks. Respects paragraph boundaries,
-keeps tables and lists atomic, tracks heading hierarchy in `section`, and splits large
-tables with continuation markers.
+Splits a document into semantically coherent chunks. Respects paragraph boundaries,
+keeps tables and lists atomic, tracks heading hierarchy in `section`, and splits
+large tables with continuation markers (`[TABLE:start]` / `[TABLE:cont]` / `[TABLE:end]`).
 
 ### `enrich_chunk` / `enrich_chunks`
 
@@ -163,12 +179,12 @@ enrich_chunk(chunk: DocumentChunk, strategy: str = "prefix") -> DocumentChunk
 enrich_chunks(chunks: list[DocumentChunk], strategy: str = "prefix") -> list[DocumentChunk]
 ```
 
-Return new chunk(s) with `embedding_content` populated. Never mutates input.
+Returns new chunk(s) with `embedding_content` set. Never mutates input.
 
-- `strategy="prefix"` — `"Section: Methods > Table 1\n\n<original content>"`
-- `strategy="inline"` — `"[Methods > Table 1] <original content>"`
-
-Raises `ValueError` for unknown strategy values.
+| Strategy | `embedding_content` format |
+|---|---|
+| `"prefix"` (default) | `"Document: aapl_10k_2025\nSection: Item 1A.  Risk Factors\n\n<content>"` |
+| `"inline"` | `"[aapl_10k_2025 > Item 1A.  Risk Factors] <content>"` |
 
 ### `DocumentLoader`
 
@@ -182,38 +198,36 @@ DocumentLoader(
 )
 ```
 
-Full pipeline: fetch → extract → chunk → enrich. Methods:
+Full pipeline: fetch → extract → chunk → enrich. `context_strategy=None` disables
+enrichment and is only useful as a baseline for benchmarking.
 
-- `loader.load(uri, name=None)` — fetch from URI and return chunks
-- `loader.load_bytes(data, name, doc_type="auto", source_path=None)` — extract from raw bytes
+Methods:
+- `loader.load(uri, name=None)` — fetch from any supported URI
+- `loader.load_bytes(data, name, doc_type="auto")` — extract from raw bytes
 - `loader.load_text(text, name)` — chunk and enrich pre-extracted text
+- `loader.load_site(url, max_pages=50, max_depth=3)` — crawl and chunk a website
+- `loader.load_directory(path, extensions=None, recursive=True)` — chunk a local directory
 
 ---
 
-## Extending chunkeymonkey
+## Extending Chunky Monkey
 
 ### Custom extractor
 
-Implement `can_handle(doc_type) -> bool` and `extract(data, source_path) -> str`, then
-pass to `DocumentLoader(extra_extractors=[...])`. See [`examples/custom_extractor.py`](examples/custom_extractor.py).
-
 ```python
-class CsvSummaryExtractor:
-    def can_handle(self, doc_type): return doc_type == "csv-summary"
+class CsvExtractor:
+    def can_handle(self, doc_type): return doc_type == "csv"
     def extract(self, data, source_path=None):
-        ...  # return str
+        return data.decode()  # return plain text
 
-loader = DocumentLoader(extra_extractors=[CsvSummaryExtractor()])
-chunks = loader.load_bytes(csv_bytes, "data.csv", doc_type="csv-summary")
+loader = DocumentLoader(extra_extractors=[CsvExtractor()])
+chunks = loader.load_bytes(csv_bytes, name="data.csv", doc_type="csv")
 ```
 
 ### Custom transport
 
-Implement `can_handle(uri) -> bool` and `fetch(uri, **kwargs) -> FetchResult`, then pass
-to `DocumentLoader(extra_transports=[...])`. See [`examples/custom_transport.py`](examples/custom_transport.py).
-
 ```python
-from chunkeymonkey.transports._protocol import FetchResult
+from chunkymonkey.transports._protocol import FetchResult
 
 class SharePointTransport:
     def can_handle(self, uri): return uri.startswith("sharepoint://")
@@ -229,42 +243,44 @@ chunks = loader.load("sharepoint://site/document")
 
 ## Storage
 
-Requires `pip install "chunkeymonkey[storage]"`.
+Requires `pip install "chunkymonkey[storage]"`.
 
 ```python
 import numpy as np
-from chunkeymonkey import DocumentLoader
-from chunkeymonkey.storage import Store
+from chunkymonkey import DocumentLoader
+from chunkymonkey.storage import Store
 
-loader = DocumentLoader(context_strategy="prefix")
+loader = DocumentLoader()
 chunks = loader.load("report.pdf")
 
-# Generate embeddings with your model
 embeddings = your_model.encode([c.embedding_content for c in chunks])
-embeddings = np.array(embeddings, dtype=np.float32)
 
 with Store("index.duckdb", embedding_dim=1024) as store:
-    store.add_document(chunks, embeddings)
+    store.add_document(chunks, np.array(embeddings, dtype=np.float32))
 
-    query_vec = your_model.encode(["What were the primary outcomes?"])
-    results = store.search(query_vec[0], limit=5)
+    results = store.search(your_model.encode(["primary outcomes"])[0], limit=5)
     for chunk_id, score, chunk in results:
-        print(f"{score:.3f} [{chunk.section}] {chunk.content[:80]}")
+        print(f"{score:.3f}  [{chunk.document_name} > {chunk.section}]")
+        print(f"       {chunk.content[:80]}")
 ```
 
 ---
 
-## Running the demo
+## Demos
 
 ```bash
-cd /path/to/chunkeymonkey
+# Synthetic multi-section docs (ops reports, product catalogs, incident logs)
 python demo/contextual_vs_naive.py
-```
 
-The demo loads `demo/sample_doc.md` — a realistic multi-section scientific document —
-twice: once with naive chunking and once with contextual enrichment. It then runs five
-queries against both approaches using a pure-Python TF-IDF retriever and shows a
-side-by-side comparison of which approach retrieved the relevant section.
+# Real SEC EDGAR 10-K filings (AAPL, MSFT, AMZN, CRM) — requires internet
+python demo/edgar_demo.py
+
+# Real ClinicalTrials.gov Phase 2/3 oncology protocols — requires internet
+python demo/clinicaltrials_demo.py
+
+# Python standard library documentation — requires internet
+python demo/python_docs_demo.py
+```
 
 ---
 

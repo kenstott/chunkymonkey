@@ -1,10 +1,17 @@
+# Copyright (c) 2025 Kenneth Stott. MIT License.
+# Canary: 320806b1-99d0-4029-99a4-3d8fec2e6276
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Custom transport example — plug in your own source.
 
 Shows how to implement the Transport protocol.
 Use this pattern for: SharePoint, Confluence, Notion, Dropbox, internal APIs.
 """
-from chunkeymonkey import DocumentLoader
-from chunkeymonkey.transports._protocol import FetchResult
+from chunkymonkey import DocumentLoader
+from chunkymonkey.transports._protocol import FetchResult
 
 
 class InMemoryTransport:

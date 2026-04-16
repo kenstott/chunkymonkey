@@ -1,14 +1,21 @@
-"""Tests for chunkeymonkey.context — enrich_chunk and enrich_chunks."""
+# Copyright (c) 2025 Kenneth Stott. MIT License.
+# Canary: 75e44fdf-178e-4130-b329-f5e639aa0819
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
+"""Tests for chunkymonkey.context — enrich_chunk and enrich_chunks."""
 
 import pytest
 
-from chunkeymonkey.context import enrich_chunk, enrich_chunks
-from chunkeymonkey.models import DocumentChunk
+from chunkymonkey.context import enrich_chunk, enrich_chunks
+from chunkymonkey.models import DocumentChunk
 
 
-def _make_chunk(section=None, content="Some chunk content."):
+def _make_chunk(section=None, content="Some chunk content.", doc_name="test_doc"):
     return DocumentChunk(
-        document_name="test_doc",
+        document_name=doc_name,
         content=content,
         section=section,
         chunk_index=0,
@@ -16,26 +23,41 @@ def _make_chunk(section=None, content="Some chunk content."):
 
 
 # =============================================================================
-# enrich_chunk
+# enrich_chunk — prefix strategy
 # =============================================================================
 
-class TestEnrichChunk:
-    def test_prefix_strategy_prepends_section(self):
-        chunk = _make_chunk(section="Methods > Table 1")
+class TestEnrichChunkPrefix:
+    def test_doc_and_section_both_present(self):
+        chunk = _make_chunk(section="Methods > Table 1", doc_name="my_report")
         result = enrich_chunk(chunk, strategy="prefix")
-        assert result.embedding_content.startswith("Section: Methods > Table 1\n\n")
-        assert chunk.content in result.embedding_content
+        assert result.embedding_content == (
+            "Document: my_report\nSection: Methods > Table 1\n\nSome chunk content."
+        )
 
-    def test_inline_strategy_brackets_section(self):
-        chunk = _make_chunk(section="Methods > Table 1")
-        result = enrich_chunk(chunk, strategy="inline")
-        assert result.embedding_content.startswith("[Methods > Table 1]")
-        assert chunk.content in result.embedding_content
-
-    def test_no_section_passthrough(self):
-        chunk = _make_chunk(section=None, content="Plain content.")
+    def test_doc_only_no_section(self):
+        chunk = _make_chunk(section=None, content="Plain content.", doc_name="my_report")
         result = enrich_chunk(chunk, strategy="prefix")
-        assert result.embedding_content == chunk.content
+        assert result.embedding_content == "Document: my_report\n\nPlain content."
+
+    def test_section_only_no_doc_name(self):
+        chunk = DocumentChunk(
+            document_name="",
+            content="Content here.",
+            section="Results",
+            chunk_index=0,
+        )
+        result = enrich_chunk(chunk, strategy="prefix")
+        assert result.embedding_content == "Section: Results\n\nContent here."
+
+    def test_neither_doc_nor_section_passthrough(self):
+        chunk = DocumentChunk(
+            document_name="",
+            content="Plain content.",
+            section=None,
+            chunk_index=0,
+        )
+        result = enrich_chunk(chunk, strategy="prefix")
+        assert result.embedding_content == "Plain content."
 
     def test_original_content_not_mutated(self):
         chunk = _make_chunk(section="Intro", content="Original text.")
@@ -52,16 +74,6 @@ class TestEnrichChunk:
         chunk = _make_chunk(section="Intro")
         with pytest.raises(ValueError, match="magic"):
             enrich_chunk(chunk, strategy="magic")
-
-    def test_prefix_content_structure(self):
-        chunk = _make_chunk(section="Results", content="The p-value was 0.03.")
-        result = enrich_chunk(chunk, strategy="prefix")
-        assert result.embedding_content == "Section: Results\n\nThe p-value was 0.03."
-
-    def test_inline_content_structure(self):
-        chunk = _make_chunk(section="Discussion", content="We observed a trend.")
-        result = enrich_chunk(chunk, strategy="inline")
-        assert result.embedding_content == "[Discussion] We observed a trend."
 
     def test_all_other_fields_preserved(self):
         chunk = DocumentChunk(
@@ -80,6 +92,71 @@ class TestEnrichChunk:
         assert result.source_length == 50
         assert result.chunk_type == "schema"
 
+    def test_content_appears_after_header_block(self):
+        chunk = _make_chunk(section="Results", content="The p-value was 0.03.")
+        result = enrich_chunk(chunk, strategy="prefix")
+        assert result.embedding_content.endswith("The p-value was 0.03.")
+        assert "\n\n" in result.embedding_content
+
+    def test_document_name_included_with_section(self):
+        """Document name must appear even when section is present — primary test of the fix."""
+        chunk = _make_chunk(section="Indemnification", doc_name="techcorp_msa")
+        result = enrich_chunk(chunk, strategy="prefix")
+        assert "techcorp_msa" in result.embedding_content
+        assert "Indemnification" in result.embedding_content
+
+    def test_document_name_disambiguates_identical_sections(self):
+        """Two chunks with the same section but different documents get different embedding_content."""
+        chunk_a = DocumentChunk(
+            document_name="techcorp_msa", content="…cap is 12 months fees…",
+            section="Limitation of Liability", chunk_index=0,
+        )
+        chunk_b = DocumentChunk(
+            document_name="cloudsolutions_agreement", content="…cap is 12 months fees…",
+            section="Limitation of Liability", chunk_index=0,
+        )
+        result_a = enrich_chunk(chunk_a, strategy="prefix")
+        result_b = enrich_chunk(chunk_b, strategy="prefix")
+        assert result_a.embedding_content != result_b.embedding_content
+        assert "techcorp_msa" in result_a.embedding_content
+        assert "cloudsolutions_agreement" in result_b.embedding_content
+
+
+# =============================================================================
+# enrich_chunk — inline strategy
+# =============================================================================
+
+class TestEnrichChunkInline:
+    def test_doc_and_section_both_present(self):
+        chunk = _make_chunk(section="Discussion", content="We observed a trend.", doc_name="my_doc")
+        result = enrich_chunk(chunk, strategy="inline")
+        assert result.embedding_content == "[my_doc > Discussion] We observed a trend."
+
+    def test_doc_only_no_section(self):
+        chunk = _make_chunk(section=None, content="Plain.", doc_name="my_doc")
+        result = enrich_chunk(chunk, strategy="inline")
+        assert result.embedding_content == "[my_doc] Plain."
+
+    def test_section_only_no_doc_name(self):
+        chunk = DocumentChunk(
+            document_name="", content="Text.", section="Methods", chunk_index=0,
+        )
+        result = enrich_chunk(chunk, strategy="inline")
+        assert result.embedding_content == "[Methods] Text."
+
+    def test_neither_passthrough(self):
+        chunk = DocumentChunk(
+            document_name="", content="Text.", section=None, chunk_index=0,
+        )
+        result = enrich_chunk(chunk, strategy="inline")
+        assert result.embedding_content == "Text."
+
+    def test_document_name_included_with_section(self):
+        chunk = _make_chunk(section="Indemnification", doc_name="cloudsolutions_agreement")
+        result = enrich_chunk(chunk, strategy="inline")
+        assert "cloudsolutions_agreement" in result.embedding_content
+        assert "Indemnification" in result.embedding_content
+
 
 # =============================================================================
 # enrich_chunks
@@ -97,15 +174,16 @@ class TestEnrichChunks:
 
     def test_mixed_sections(self):
         chunks = [
-            _make_chunk(section="Intro", content="Has a section."),
-            _make_chunk(section=None, content="No section here."),
-            _make_chunk(section="Methods", content="Another section."),
+            _make_chunk(section="Intro", content="Has a section.", doc_name="doc_a"),
+            _make_chunk(section=None, content="No section here.", doc_name="doc_a"),
+            _make_chunk(section="Methods", content="Another section.", doc_name="doc_a"),
         ]
         results = enrich_chunks(chunks, strategy="prefix")
         assert all(r.embedding_content is not None for r in results)
-        assert results[0].embedding_content.startswith("Section: Intro")
-        assert results[1].embedding_content == "No section here."
-        assert results[2].embedding_content.startswith("Section: Methods")
+        assert "doc_a" in results[0].embedding_content
+        assert "Intro" in results[0].embedding_content
+        assert "doc_a" in results[1].embedding_content
+        assert "Methods" in results[2].embedding_content
 
     def test_returns_new_list(self):
         chunks = [_make_chunk(section="A"), _make_chunk(section="B")]
@@ -121,3 +199,16 @@ class TestEnrichChunks:
         chunks = [_make_chunk() for _ in range(7)]
         results = enrich_chunks(chunks, strategy="prefix")
         assert len(results) == 7
+
+    def test_all_chunks_include_document_name(self):
+        """Every chunk in a batch should carry the document name in embedding_content."""
+        chunks = [
+            DocumentChunk(
+                document_name="techcorp_msa", content=f"Clause {i} text.",
+                section=f"Section {i}", chunk_index=i,
+            )
+            for i in range(5)
+        ]
+        results = enrich_chunks(chunks, strategy="prefix")
+        for r in results:
+            assert "techcorp_msa" in r.embedding_content

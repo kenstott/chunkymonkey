@@ -1,9 +1,16 @@
-"""Tests for chunkeymonkey transport backends."""
+# Copyright (c) 2025 Kenneth Stott. MIT License.
+# Canary: 8695d94f-ed02-46c6-bf6e-ce109870096a
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
+"""Tests for chunkymonkey transport backends."""
 
 import pytest
 
-from chunkeymonkey.transports import LocalTransport, HttpTransport, S3Transport, detect_transport
-from chunkeymonkey.transports._protocol import FetchResult
+from chunkymonkey.transports import LocalTransport, HttpTransport, S3Transport, detect_transport
+from chunkymonkey.transports._protocol import FetchResult
 
 
 # =============================================================================
@@ -13,9 +20,9 @@ from chunkeymonkey.transports._protocol import FetchResult
 class TestLocalTransport:
     def test_reads_file(self, tmp_path):
         f = tmp_path / "test.txt"
-        f.write_bytes(b"hello from chunkeymonkey")
+        f.write_bytes(b"hello from chunkymonkey")
         result = LocalTransport().fetch(str(f))
-        assert result.data == b"hello from chunkeymonkey"
+        assert result.data == b"hello from chunkymonkey"
 
     def test_returns_fetch_result(self, tmp_path):
         f = tmp_path / "test.txt"

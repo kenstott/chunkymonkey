@@ -1,21 +1,28 @@
-"""Integration tests for chunkeymonkey storage (requires chunkeymonkey[storage])."""
+# Copyright (c) 2025 Kenneth Stott. MIT License.
+# Canary: 9c3c753b-dc25-4887-93b9-efc45c77f98b
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
+"""Integration tests for chunkymonkey storage (requires chunkymonkey[storage])."""
 
 import pytest
 
 try:
     import duckdb
     import numpy as np
-    from chunkeymonkey.storage import Store
+    from chunkymonkey.storage import Store
     STORAGE_AVAILABLE = True
 except ImportError:
     STORAGE_AVAILABLE = False
 
 pytestmark = pytest.mark.skipif(
     not STORAGE_AVAILABLE,
-    reason="chunkeymonkey[storage] not installed — pip install chunkeymonkey[storage]",
+    reason="chunkymonkey[storage] not installed — pip install chunkymonkey[storage]",
 )
 
-from chunkeymonkey.models import DocumentChunk
+from chunkymonkey.models import DocumentChunk
 
 
 def make_chunks(n=3):

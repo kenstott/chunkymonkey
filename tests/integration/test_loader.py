@@ -1,9 +1,16 @@
+# Copyright (c) 2025 Kenneth Stott. MIT License.
+# Canary: cde8ac31-a3e1-42a8-a5d1-5b80b61f4f3d
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Integration tests for DocumentLoader using LocalTransport + TextExtractor."""
 
 import pytest
 from pathlib import Path
 
-from chunkeymonkey import DocumentLoader
+from chunkymonkey import DocumentLoader
 
 SAMPLE_MARKDOWN = """# Introduction
 
@@ -32,7 +39,7 @@ class TestDocumentLoaderMarkdown:
         assert len(chunks) > 0
 
     def test_chunks_are_document_chunks(self, tmp_path):
-        from chunkeymonkey import DocumentChunk
+        from chunkymonkey import DocumentChunk
         f = tmp_path / "sample.md"
         f.write_text(SAMPLE_MARKDOWN)
         chunks = DocumentLoader().load(str(f))
@@ -148,7 +155,7 @@ class TestCustomExtractor:
         assert chunks[0].content == "override extracted"
 
     def test_custom_transport_used(self, tmp_path):
-        from chunkeymonkey.transports._protocol import FetchResult
+        from chunkymonkey.transports._protocol import FetchResult
 
         class MemTransport:
             def can_handle(self, uri):

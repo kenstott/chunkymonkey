@@ -1,8 +1,15 @@
-"""Tests for chunkeymonkey chunking primitives."""
+# Copyright (c) 2025 Kenneth Stott. MIT License.
+# Canary: db6662f3-b348-4d85-9bc9-6371616ddc70
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
+"""Tests for chunkymonkey chunking primitives."""
 
 import pytest
 
-from chunkeymonkey import (
+from chunkymonkey import (
     DocumentChunk,
     chunk_document,
     is_list_line,
@@ -175,62 +182,112 @@ class TestMergeBlocks:
 class TestChunkDocument:
     def test_basic_chunking(self):
         content = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
-        chunks = chunk_document("test.md", content, chunk_size=50, table_chunk_limit=500)
+        chunks = chunk_document("test.md", content, min_chunk_size=25, max_chunk_size=50)
         assert all(isinstance(c, DocumentChunk) for c in chunks)
         assert all(c.document_name == "test.md" for c in chunks)
 
     def test_chunk_indices_sequential(self):
         content = "\n\n".join(f"Paragraph {i} with some content." for i in range(10))
-        chunks = chunk_document("doc.txt", content, chunk_size=50, table_chunk_limit=500)
+        chunks = chunk_document("doc.txt", content, min_chunk_size=25, max_chunk_size=50)
         assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 
     def test_small_paragraphs_combined(self):
         content = "A.\n\nB.\n\nC.\n\nD."
-        chunks = chunk_document("doc.txt", content, chunk_size=100, table_chunk_limit=500)
+        chunks = chunk_document("doc.txt", content, min_chunk_size=50, max_chunk_size=100)
         # All fit in one chunk
         assert len(chunks) == 1
         assert "A." in chunks[0].content
 
-    def test_oversized_paragraph_not_split(self):
+    def test_oversized_paragraph_gets_split(self):
+        # A paragraph with no sentence endings stays whole even if over max
         long_para = "x" * 2000
         content = f"Intro.\n\n{long_para}\n\nOutro."
-        chunks = chunk_document("doc.txt", content, chunk_size=100, table_chunk_limit=500)
-        long_chunk = next(c for c in chunks if len(c.content) > 100)
+        chunks = chunk_document("doc.txt", content, min_chunk_size=50, max_chunk_size=100)
+        # long_para has no sentence boundary so it stays as one piece
+        long_chunk = next(c for c in chunks if "x" * 100 in c.content)
         assert long_chunk is not None
 
-    def test_markdown_heading_forces_break(self):
+    def test_sections_accumulate_below_min(self):
         content = "# Section A\n\nContent A.\n\n# Section B\n\nContent B."
-        chunks = chunk_document("doc.md", content, chunk_size=5000, table_chunk_limit=500)
-        # Heading forces a break — should produce at least 2 chunks
-        assert len(chunks) >= 2
+        chunks = chunk_document("doc.md", content, min_chunk_size=5000, max_chunk_size=10000)
+        # Both sections are well below min_chunk_size — accumulate into one chunk
+        assert len(chunks) == 1
+        assert "Content A." in chunks[0].content
+        assert "Content B." in chunks[0].content
 
-    def test_section_breadcrumbs_set(self):
+    def test_sections_flush_above_min(self):
+        content = "# Section A\n\nContent A.\n\n# Section B\n\nContent B."
+        # min=10 means after accumulating "# Section A\n\nContent A." (~22 chars) we're past min
+        # so "# Section B" triggers a flush → 2 chunks
+        chunks = chunk_document("doc.md", content, min_chunk_size=10, max_chunk_size=5000)
+        assert len(chunks) == 2
+
+    def test_section_lca_breadcrumb(self):
+        # Sub-heading subsumed — LCA is the parent
         content = "# Top\n\nIntro.\n\n## Sub\n\nDetail."
-        chunks = chunk_document("doc.md", content, chunk_size=5000, table_chunk_limit=500)
-        sections = [c.section for c in chunks if c.section]
-        assert any("Top" in s for s in sections)
+        chunks = chunk_document("doc.md", content, min_chunk_size=5000, max_chunk_size=10000)
+        assert len(chunks) == 1
+        assert chunks[0].section == "Top"
+        assert chunks[0].breadcrumb == "[doc.md > Top]"
+        assert "[doc.md > Top]" in chunks[0].embedding_content
+
+    def test_sibling_sections_lca_is_parent(self):
+        content = "# Parent\n\n## Child A\n\nText A.\n\n## Child B\n\nText B."
+        chunks = chunk_document("doc.md", content, min_chunk_size=5000, max_chunk_size=10000)
+        # All in one chunk; LCA of ["Parent","Child A"] and ["Parent","Child B"] = ["Parent"]
+        assert len(chunks) == 1
+        assert chunks[0].section == "Parent"
+        assert chunks[0].breadcrumb == "[doc.md > Parent]"
+        assert "[doc.md > Parent]" in chunks[0].embedding_content
+
+    def test_breadcrumb_absent_when_disabled(self):
+        content = "# Section\n\nSome text."
+        chunks = chunk_document("doc.md", content, min_chunk_size=5000, max_chunk_size=10000,
+                                include_breadcrumb=False)
+        assert len(chunks) == 1
+        assert not chunks[0].content.startswith("[")
+        assert "Some text." in chunks[0].content
 
     def test_table_continuation_markers(self):
         rows = "\n".join(f"| col{i} | val{i} | extra{i} |" for i in range(100))
         content = f"Intro.\n\n{rows}\n\nOutro."
-        chunks = chunk_document("doc.md", content, chunk_size=200, table_chunk_limit=200)
+        chunks = chunk_document("doc.md", content, min_chunk_size=100, max_chunk_size=200)
         table_chunks = [c for c in chunks if "[TABLE:" in c.content]
         assert len(table_chunks) >= 2
         markers = {m for c in table_chunks for m in ["[TABLE:start]", "[TABLE:cont]", "[TABLE:end]"] if m in c.content}
         assert "[TABLE:start]" in markers
 
+    def test_list_continuation_markers(self):
+        items = "\n".join(f"- Item {i}: some description text here" for i in range(50))
+        chunks = chunk_document("doc.md", items, min_chunk_size=100, max_chunk_size=200)
+        list_chunks = [c for c in chunks if "[LIST:" in c.content]
+        assert len(list_chunks) >= 2
+        markers = {m for c in list_chunks for m in ["[LIST:start]", "[LIST:cont]", "[LIST:end]"] if m in c.content}
+        assert "[LIST:start]" in markers
+
+    def test_para_continuation_markers(self):
+        # Long prose with sentence boundaries
+        sentences = " ".join(f"This is sentence number {i}." for i in range(40))
+        chunks = chunk_document("doc.md", sentences, min_chunk_size=100, max_chunk_size=200)
+        para_chunks = [c for c in chunks if "[PARA:" in c.content]
+        assert len(para_chunks) >= 2
+        markers = {m for c in para_chunks for m in ["[PARA:start]", "[PARA:cont]", "[PARA:end]"] if m in c.content}
+        assert "[PARA:start]" in markers
+
     def test_empty_content_returns_no_chunks(self):
-        chunks = chunk_document("empty.txt", "", chunk_size=1000, table_chunk_limit=500)
+        chunks = chunk_document("empty.txt", "", min_chunk_size=100, max_chunk_size=1000)
         assert chunks == []
 
     def test_single_line_content(self):
-        chunks = chunk_document("line.txt", "Just one line.", chunk_size=1000, table_chunk_limit=500)
+        chunks = chunk_document("line.txt", "Just one line.", min_chunk_size=100, max_chunk_size=1000)
         assert len(chunks) == 1
-        assert chunks[0].content == "Just one line."
+        assert "Just one line." in chunks[0].content
+        assert chunks[0].breadcrumb == "[line.txt]"
+        assert chunks[0].embedding_content.startswith("[line.txt]")
 
     def test_sheet_marker_forces_break(self):
         content = "[Sheet: Sheet1]\n\nData row 1.\n\n[Sheet: Sheet2]\n\nData row 2."
-        chunks = chunk_document("book.xlsx", content, chunk_size=5000, table_chunk_limit=500)
+        chunks = chunk_document("book.xlsx", content, min_chunk_size=5000, max_chunk_size=10000)
         assert len(chunks) >= 2
 
 

@@ -1,10 +1,17 @@
+# Copyright (c) 2025 Kenneth Stott. MIT License.
+# Canary: 90ffcf48-53ce-4e1d-b958-bbb627326d6f
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Unit tests for stdlib-only extractors (HtmlExtractor, TextExtractor) and detect_extractor."""
 
 import pytest
 
-from chunkeymonkey.extractors._html import HtmlExtractor
-from chunkeymonkey.extractors._text import TextExtractor
-from chunkeymonkey.extractors import detect_extractor
+from chunkymonkey.extractors._html import HtmlExtractor
+from chunkymonkey.extractors._text import TextExtractor
+from chunkymonkey.extractors import detect_extractor
 
 
 # =============================================================================
@@ -127,8 +134,8 @@ class TestTextExtractor:
     def test_can_handle_markdown(self):
         assert TextExtractor().can_handle("markdown")
 
-    def test_can_handle_json(self):
-        assert TextExtractor().can_handle("json")
+    def test_cannot_handle_json(self):
+        assert not TextExtractor().can_handle("json")
 
     def test_can_handle_csv(self):
         assert TextExtractor().can_handle("csv")
@@ -136,11 +143,11 @@ class TestTextExtractor:
     def test_can_handle_yaml(self):
         assert TextExtractor().can_handle("yaml")
 
-    def test_can_handle_xml(self):
-        assert TextExtractor().can_handle("xml")
+    def test_cannot_handle_xml(self):
+        assert not TextExtractor().can_handle("xml")
 
-    def test_can_handle_jsonl(self):
-        assert TextExtractor().can_handle("jsonl")
+    def test_cannot_handle_jsonl(self):
+        assert not TextExtractor().can_handle("jsonl")
 
     def test_cannot_handle_pdf(self):
         assert not TextExtractor().can_handle("pdf")
@@ -175,22 +182,23 @@ class TestDetectExtractor:
         assert isinstance(detect_extractor("csv"), TextExtractor)
 
     def test_detect_json(self):
-        assert isinstance(detect_extractor("json"), TextExtractor)
+        from chunkymonkey.extractors._json import JsonExtractor
+        assert isinstance(detect_extractor("json"), JsonExtractor)
 
     def test_detect_pdf(self):
-        from chunkeymonkey.extractors._pdf import PdfExtractor
+        from chunkymonkey.extractors._pdf import PdfExtractor
         assert isinstance(detect_extractor("pdf"), PdfExtractor)
 
     def test_detect_docx(self):
-        from chunkeymonkey.extractors._docx import DocxExtractor
+        from chunkymonkey.extractors._docx import DocxExtractor
         assert isinstance(detect_extractor("docx"), DocxExtractor)
 
     def test_detect_xlsx(self):
-        from chunkeymonkey.extractors._xlsx import XlsxExtractor
+        from chunkymonkey.extractors._xlsx import XlsxExtractor
         assert isinstance(detect_extractor("xlsx"), XlsxExtractor)
 
     def test_detect_pptx(self):
-        from chunkeymonkey.extractors._pptx import PptxExtractor
+        from chunkymonkey.extractors._pptx import PptxExtractor
         assert isinstance(detect_extractor("pptx"), PptxExtractor)
 
     def test_unknown_raises(self):

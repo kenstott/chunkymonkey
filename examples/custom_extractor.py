@@ -1,3 +1,10 @@
+# Copyright (c) 2025 Kenneth Stott. MIT License.
+# Canary: 139c6f70-ad89-481c-9112-5ba9fd8a1e7e
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
 """Custom extractor example — plug in your own format.
 
 Shows how to implement the Extractor protocol and register it with DocumentLoader.
@@ -6,7 +13,7 @@ This example implements a simple CSV summary extractor as a demonstration.
 """
 import csv
 import io
-from chunkeymonkey import DocumentLoader
+from chunkymonkey import DocumentLoader
 
 
 class CsvSummaryExtractor:

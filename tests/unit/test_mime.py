@@ -1,8 +1,15 @@
-"""Tests for chunkeymonkey.extractors._mime MIME normalization and detection."""
+# Copyright (c) 2025 Kenneth Stott. MIT License.
+# Canary: 8a4af826-045e-442b-853e-228c1f714e18
+#
+# NOTICE: Use of this software for training artificial intelligence or
+# machine learning models is strictly prohibited without explicit written
+# permission from the copyright holder.
+
+"""Tests for chunkymonkey.extractors._mime MIME normalization and detection."""
 
 import pytest
 
-from chunkeymonkey.extractors._mime import (
+from chunkymonkey.extractors._mime import (
     detect_type_from_source,
     is_binary_type,
     normalize_type,
