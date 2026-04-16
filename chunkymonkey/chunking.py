@@ -245,25 +245,25 @@ def chunk_document(
         if not current_section_paths or current_section_paths[-1] != current_path:
             current_section_paths.append(list(current_path))
 
-    def _build_breadcrumb() -> str:
+    def _build_content(text: str) -> str:
+        if not include_breadcrumb or not text:
+            return text
         lca = _lca_path(current_section_paths)
-        return f"[{name} > {' > '.join(lca)}]" if lca else f"[{name}]"
+        crumb = f"[{name} > {' > '.join(lca)}]" if lca else f"[{name}]"
+        return f"{crumb}\n\n{text}"
 
     def _flush(text: str, idx: int, offset: int | None) -> DocumentChunk:
         lca = _lca_path(current_section_paths)
         section_str = " > ".join(lca) if lca else None
-        crumb = _build_breadcrumb() if include_breadcrumb else None
-        full_text = f"{crumb}\n\n{text}" if crumb else text
+        full_text = _build_content(text)
         src_len = len(full_text.encode("utf-8")) if full_text else 0
         return DocumentChunk(
             document_name=name,
-            content=text,
+            content=full_text,
             section=section_str,
             chunk_index=idx,
             source_offset=offset,
             source_length=src_len,
-            breadcrumb=crumb,
-            embedding_content=full_text if crumb else None,
         )
 
     def _reset() -> None:

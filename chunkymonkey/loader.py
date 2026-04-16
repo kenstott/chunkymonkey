@@ -8,7 +8,6 @@
 """DocumentLoader — orchestrates Transport → Extractor → chunk_document → enrich_chunks."""
 from __future__ import annotations
 
-import dataclasses
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
