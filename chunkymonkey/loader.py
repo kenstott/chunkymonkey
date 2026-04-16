@@ -172,6 +172,49 @@ class DocumentLoader:
         )
         return self._enrich(chunks)
 
+    def load_query(
+        self,
+        connection_url: str,
+        query: str,
+        name: str,
+        params: dict | None = None,
+    ) -> list[DocumentChunk]:
+        """Execute a SQL query via SQLAlchemy and load the result as a document.
+
+        Results are rendered as a markdown table by the CsvExtractor and then
+        chunked like any other document.
+
+        Args:
+            connection_url: SQLAlchemy connection URL (e.g. ``postgresql://...``).
+            query:          SQL query to execute.
+            name:           Document name for chunk metadata.
+            params:         Optional dict of named bind parameter values.
+
+        Returns:
+            List of DocumentChunk objects.
+
+        Example::
+
+            chunks = loader.load_query(
+                "sqlite:///data.db",
+                "SELECT title, body FROM articles WHERE published = 1",
+                name="articles",
+            )
+        """
+        from .transports._sqlalchemy import SqlAlchemyTransport
+        from .extractors._csv import CsvExtractor
+
+        transport = SqlAlchemyTransport(connection_url, query=query, params=params)
+        result = transport.fetch(f"sqlalchemy://{name}")
+        text = CsvExtractor().extract(result.data)
+
+        chunks = chunk_document(
+            name, text,
+            self.min_chunk_size, self.max_chunk_size, self.overflow_margin,
+            include_breadcrumb=(self.context_strategy is not None),
+        )
+        return self._enrich(chunks)
+
     def load_text(self, text: str, name: str) -> list[DocumentChunk]:
         """Skip fetch and extract; chunk and enrich pre-extracted text.
 

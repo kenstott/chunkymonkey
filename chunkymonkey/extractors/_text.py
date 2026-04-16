@@ -13,10 +13,7 @@ from __future__ import annotations
 class TextExtractor:
     """Extract content from text-based formats by decoding bytes."""
 
-    HANDLED = {
-        "text", "markdown", "md", "csv",
-        "yaml", "yml", "txt",
-    }
+    HANDLED = {"text", "csv", "txt"}
 
     def can_handle(self, doc_type: str) -> bool:
         return doc_type in self.HANDLED

@@ -5,12 +5,14 @@
 # machine learning models is strictly prohibited without explicit written
 # permission from the copyright holder.
 
-"""Unit tests for stdlib-only extractors (HtmlExtractor, TextExtractor) and detect_extractor."""
+"""Unit tests for stdlib-only extractors (HtmlExtractor, TextExtractor, MarkdownExtractor, YamlExtractor) and detect_extractor."""
 
 import pytest
 
 from chunkymonkey.extractors._html import HtmlExtractor
 from chunkymonkey.extractors._text import TextExtractor
+from chunkymonkey.extractors._markdown import MarkdownExtractor
+from chunkymonkey.extractors._yaml import YamlExtractor
 from chunkymonkey.extractors import detect_extractor
 
 
@@ -131,8 +133,8 @@ class TestTextExtractor:
     def test_can_handle_text(self):
         assert TextExtractor().can_handle("text")
 
-    def test_can_handle_markdown(self):
-        assert TextExtractor().can_handle("markdown")
+    def test_cannot_handle_markdown(self):
+        assert not TextExtractor().can_handle("markdown")
 
     def test_cannot_handle_json(self):
         assert not TextExtractor().can_handle("json")
@@ -140,8 +142,8 @@ class TestTextExtractor:
     def test_can_handle_csv(self):
         assert TextExtractor().can_handle("csv")
 
-    def test_can_handle_yaml(self):
-        assert TextExtractor().can_handle("yaml")
+    def test_cannot_handle_yaml(self):
+        assert not TextExtractor().can_handle("yaml")
 
     def test_cannot_handle_xml(self):
         assert not TextExtractor().can_handle("xml")
@@ -176,10 +178,11 @@ class TestDetectExtractor:
         assert isinstance(detect_extractor("text"), TextExtractor)
 
     def test_detect_markdown(self):
-        assert isinstance(detect_extractor("markdown"), TextExtractor)
+        assert isinstance(detect_extractor("markdown"), MarkdownExtractor)
 
     def test_detect_csv(self):
-        assert isinstance(detect_extractor("csv"), TextExtractor)
+        from chunkymonkey.extractors._csv import CsvExtractor
+        assert isinstance(detect_extractor("csv"), CsvExtractor)
 
     def test_detect_json(self):
         from chunkymonkey.extractors._json import JsonExtractor
@@ -201,6 +204,290 @@ class TestDetectExtractor:
         from chunkymonkey.extractors._pptx import PptxExtractor
         assert isinstance(detect_extractor("pptx"), PptxExtractor)
 
+    def test_detect_yaml(self):
+        assert isinstance(detect_extractor("yaml"), YamlExtractor)
+
     def test_unknown_raises(self):
         with pytest.raises(ValueError, match="No extractor found"):
             detect_extractor("totally_unknown_format_xyz")
+
+
+# =============================================================================
+# MarkdownExtractor
+# =============================================================================
+
+class TestMarkdownExtractor:
+    def test_passthrough_plain_markdown(self):
+        data = b"# Hello\n\nSome paragraph."
+        result = MarkdownExtractor().extract(data)
+        assert result == "# Hello\n\nSome paragraph."
+
+    def test_strips_frontmatter(self):
+        data = b"---\ntitle: My Doc\ndate: 2025-01-01\n---\n# Actual Content"
+        result = MarkdownExtractor().extract(data)
+        assert "title:" not in result
+        assert "# Actual Content" in result
+
+    def test_no_frontmatter_unchanged(self):
+        data = b"# Title\n\nParagraph without frontmatter."
+        result = MarkdownExtractor().extract(data)
+        assert "# Title" in result
+        assert "Paragraph without frontmatter." in result
+
+    def test_frontmatter_only_returns_empty(self):
+        data = b"---\ntitle: Only Frontmatter\n---\n"
+        result = MarkdownExtractor().extract(data)
+        assert result.strip() == ""
+
+    def test_can_handle_markdown(self):
+        assert MarkdownExtractor().can_handle("markdown")
+
+    def test_cannot_handle_text(self):
+        assert not MarkdownExtractor().can_handle("text")
+
+    def test_cannot_handle_html(self):
+        assert not MarkdownExtractor().can_handle("html")
+
+    def test_latin1_fallback(self):
+        data = "---\ntitle: Test\n---\n# Héllo".encode("latin-1")
+        result = MarkdownExtractor().extract(data)
+        assert "# H" in result
+        assert "title:" not in result
+
+
+# =============================================================================
+# YamlExtractor
+# =============================================================================
+
+class TestYamlExtractor:
+    def test_simple_mapping(self):
+        data = b"name: Alice\nage: 30"
+        result = YamlExtractor().extract(data)
+        assert "name" in result
+        assert "Alice" in result
+        assert "age" in result
+        assert "30" in result
+
+    def test_nested_mapping(self):
+        data = b"person:\n  name: Bob\n  city: Austin"
+        result = YamlExtractor().extract(data)
+        assert "Bob" in result
+        assert "Austin" in result
+
+    def test_list_values(self):
+        data = b"fruits:\n  - apple\n  - banana\n  - cherry"
+        result = YamlExtractor().extract(data)
+        assert "apple" in result
+        assert "banana" in result
+        assert "cherry" in result
+
+    def test_multi_document(self):
+        data = b"name: Doc1\n---\nname: Doc2"
+        result = YamlExtractor().extract(data)
+        assert "Doc1" in result
+        assert "Doc2" in result
+        assert "---" in result
+
+    def test_invalid_yaml_returns_raw(self):
+        data = b"key: [unclosed"
+        result = YamlExtractor().extract(data)
+        assert isinstance(result, str)
+
+    def test_can_handle_yaml(self):
+        assert YamlExtractor().can_handle("yaml")
+
+    def test_cannot_handle_json(self):
+        assert not YamlExtractor().can_handle("json")
+
+    def test_cannot_handle_text(self):
+        assert not YamlExtractor().can_handle("text")
+
+    def test_empty_doc_skipped(self):
+        data = b"---\n---\nname: Real"
+        result = YamlExtractor().extract(data)
+        assert "Real" in result
+
+
+# =============================================================================
+# CsvExtractor
+# =============================================================================
+
+class TestCsvExtractor:
+    def test_renders_markdown_table(self):
+        from chunkymonkey.extractors._csv import CsvExtractor
+        data = b"name,age\nAlice,30\nBob,25"
+        result = CsvExtractor().extract(data)
+        assert "| name |" in result
+        assert "| age |" in result
+        assert "Alice" in result
+        assert "30" in result
+        assert "---" in result
+
+    def test_pipe_chars_escaped(self):
+        from chunkymonkey.extractors._csv import CsvExtractor
+        data = b"col\nval|ue"
+        result = CsvExtractor().extract(data)
+        assert "\\|" in result
+
+    def test_empty_csv_returns_empty(self):
+        from chunkymonkey.extractors._csv import CsvExtractor
+        result = CsvExtractor().extract(b"")
+        assert result == ""
+
+    def test_can_handle_csv(self):
+        from chunkymonkey.extractors._csv import CsvExtractor
+        assert CsvExtractor().can_handle("csv")
+
+    def test_can_handle_tsv(self):
+        from chunkymonkey.extractors._csv import CsvExtractor
+        assert CsvExtractor().can_handle("tsv")
+
+    def test_cannot_handle_text(self):
+        from chunkymonkey.extractors._csv import CsvExtractor
+        assert not CsvExtractor().can_handle("text")
+
+    def test_tab_separated(self):
+        from chunkymonkey.extractors._csv import CsvExtractor
+        data = b"name\tage\nAlice\t30"
+        result = CsvExtractor().extract(data)
+        assert "Alice" in result
+        assert "30" in result
+
+
+# =============================================================================
+# OdfExtractor
+# =============================================================================
+
+def _make_odt(paragraphs: list[str], headings: list[tuple[int, str]] | None = None) -> bytes:
+    """Build a minimal ODT document in memory using odfpy."""
+    pytest.importorskip("odf")
+    from odf.opendocument import OpenDocumentText
+    from odf.text import P, H
+    from odf.style import Style, TextProperties
+    import io
+
+    doc = OpenDocumentText()
+    for level, text in (headings or []):
+        h = H(outlinelevel=level, text=text)
+        doc.text.addElement(h)
+    for text in paragraphs:
+        p = P(text=text)
+        doc.text.addElement(p)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _make_ods(sheets: dict[str, list[list[str]]]) -> bytes:
+    """Build a minimal ODS document in memory using odfpy."""
+    pytest.importorskip("odf")
+    from odf.opendocument import OpenDocumentSpreadsheet
+    from odf.table import Table, TableRow, TableCell
+    from odf.text import P
+    import io
+
+    doc = OpenDocumentSpreadsheet()
+    for sheet_name, rows in sheets.items():
+        table = Table(name=sheet_name)
+        for row_data in rows:
+            row = TableRow()
+            for cell_text in row_data:
+                cell = TableCell()
+                cell.addElement(P(text=cell_text))
+                row.addElement(cell)
+            table.addElement(row)
+        doc.spreadsheet.addElement(table)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _make_odp(slides: list[list[str]]) -> bytes:
+    """Build a minimal ODP document in memory using odfpy."""
+    pytest.importorskip("odf")
+    from odf.opendocument import OpenDocumentPresentation
+    from odf.draw import Page, TextBox, Frame
+    from odf.text import P
+    import io
+
+    doc = OpenDocumentPresentation()
+    for slide_texts in slides:
+        page = Page(masterpagename="Default")
+        for text in slide_texts:
+            frame = Frame(width="20cm", height="2cm", x="2cm", y="2cm")
+            tb = TextBox()
+            tb.addElement(P(text=text))
+            frame.addElement(tb)
+            page.addElement(frame)
+        doc.presentation.addElement(page)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+class TestOdfExtractor:
+    def test_odt_paragraph_text(self):
+        from chunkymonkey.extractors._odf import OdfExtractor
+        data = _make_odt(["Hello world", "Second paragraph"])
+        result = OdfExtractor().extract(data)
+        assert "Hello world" in result
+        assert "Second paragraph" in result
+
+    def test_odt_heading_levels(self):
+        from chunkymonkey.extractors._odf import OdfExtractor
+        data = _make_odt([], headings=[(1, "Chapter One"), (2, "Section")])
+        result = OdfExtractor().extract(data)
+        assert "# Chapter One" in result
+        assert "## Section" in result
+
+    def test_ods_sheet_rows(self):
+        from chunkymonkey.extractors._odf import OdfExtractor
+        data = _make_ods({"Sales": [["Name", "Amount"], ["Alice", "100"]]})
+        result = OdfExtractor().extract(data)
+        assert "Sales" in result
+        assert "Alice" in result
+        assert "100" in result
+
+    def test_ods_multiple_sheets(self):
+        from chunkymonkey.extractors._odf import OdfExtractor
+        data = _make_ods({
+            "Sheet1": [["a", "b"]],
+            "Sheet2": [["c", "d"]],
+        })
+        result = OdfExtractor().extract(data)
+        assert "Sheet1" in result
+        assert "Sheet2" in result
+
+    def test_odp_slide_text(self):
+        from chunkymonkey.extractors._odf import OdfExtractor
+        data = _make_odp([["Title of slide", "Bullet point"]])
+        result = OdfExtractor().extract(data)
+        assert "Slide 1" in result
+
+    def test_can_handle_odt(self):
+        from chunkymonkey.extractors._odf import OdfExtractor
+        assert OdfExtractor().can_handle("odt")
+
+    def test_can_handle_ods(self):
+        from chunkymonkey.extractors._odf import OdfExtractor
+        assert OdfExtractor().can_handle("ods")
+
+    def test_can_handle_odp(self):
+        from chunkymonkey.extractors._odf import OdfExtractor
+        assert OdfExtractor().can_handle("odp")
+
+    def test_cannot_handle_docx(self):
+        from chunkymonkey.extractors._odf import OdfExtractor
+        assert not OdfExtractor().can_handle("docx")
+
+    def test_detect_odt(self):
+        from chunkymonkey.extractors._odf import OdfExtractor
+        assert isinstance(detect_extractor("odt"), OdfExtractor)
+
+    def test_detect_ods(self):
+        from chunkymonkey.extractors._odf import OdfExtractor
+        assert isinstance(detect_extractor("ods"), OdfExtractor)
+
+    def test_detect_odp(self):
+        from chunkymonkey.extractors._odf import OdfExtractor
+        assert isinstance(detect_extractor("odp"), OdfExtractor)

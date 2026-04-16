@@ -25,6 +25,9 @@ MIME_TO_SHORT: dict[str, str] = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "application/vnd.oasis.opendocument.text": "odt",
+    "application/vnd.oasis.opendocument.spreadsheet": "ods",
+    "application/vnd.oasis.opendocument.presentation": "odp",
     "image/png": "image",
     "image/jpeg": "image",
     "image/tiff": "image",
@@ -53,6 +56,7 @@ EXTENSION_TO_SHORT: dict[str, str] = {
     ".markdown": "markdown",
     ".txt": "text",
     ".csv": "csv",
+    ".tsv": "tsv",
     ".json": "json",
     ".jsonl": "jsonl",
     ".ndjson": "jsonl",
@@ -62,6 +66,9 @@ EXTENSION_TO_SHORT: dict[str, str] = {
     ".docx": "docx",
     ".xlsx": "xlsx",
     ".pptx": "pptx",
+    ".odt": "odt",
+    ".ods": "ods",
+    ".odp": "odp",
     ".png": "image",
     ".jpg": "image",
     ".jpeg": "image",
@@ -84,8 +91,8 @@ EXTENSION_TO_SHORT: dict[str, str] = {
 
 # All known short aliases
 _KNOWN_SHORT: set[str] = {
-    "auto", "pdf", "html", "markdown", "text", "csv", "json", "jsonl",
-    "yaml", "xml", "docx", "xlsx", "pptx", "image", "audio",
+    "auto", "pdf", "html", "markdown", "text", "csv", "tsv", "json", "jsonl",
+    "yaml", "xml", "docx", "xlsx", "pptx", "odt", "ods", "odp", "image", "audio",
 }
 
 # Legacy transport types — treated as "auto" (transport is now inferred from fields)
@@ -174,6 +181,7 @@ _LOADABLE_MIME_PREFIXES = (
     "application/x-yaml",
     "application/x-ndjson",
     "application/vnd.openxmlformats",
+    "application/vnd.oasis.opendocument",
     "application/msword",
     "application/vnd.ms-excel",
     "application/vnd.ms-powerpoint",

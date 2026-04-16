@@ -16,6 +16,7 @@ from ._ftp import FtpTransport
 from ._sftp import SftpTransport
 from ._web_crawler import WebCrawler
 from ._directory_crawler import DirectoryCrawler
+from ._sqlalchemy import SqlAlchemyTransport
 
 _DEFAULT_REGISTRY = [
     LocalTransport(),
@@ -45,5 +46,6 @@ __all__ = [
     "SftpTransport",
     "WebCrawler",
     "DirectoryCrawler",
+    "SqlAlchemyTransport",
     "detect_transport",
 ]

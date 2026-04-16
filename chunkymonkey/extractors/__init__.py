@@ -18,6 +18,10 @@ from ._docx import DocxExtractor
 from ._xlsx import XlsxExtractor
 from ._pptx import PptxExtractor
 from ._edgar import EdgarExtractor
+from ._yaml import YamlExtractor
+from ._markdown import MarkdownExtractor
+from ._csv import CsvExtractor
+from ._odf import OdfExtractor
 
 _REGISTRY: list[Extractor] | None = None
 
@@ -31,6 +35,10 @@ def _build_registry() -> list[Extractor]:
         PptxExtractor(),
         HtmlExtractor(),
         JsonExtractor(),
+        YamlExtractor(),
+        MarkdownExtractor(),
+        CsvExtractor(),
+        OdfExtractor(),
         XmlExtractor(),
         TextExtractor(),
     ]
@@ -74,6 +82,10 @@ __all__ = [
     "PptxExtractor",
     "EdgarExtractor",
     "JsonExtractor",
+    "YamlExtractor",
+    "MarkdownExtractor",
+    "CsvExtractor",
+    "OdfExtractor",
     "XmlExtractor",
     "detect_extractor",
     "register_extractor",
