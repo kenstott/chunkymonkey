@@ -25,6 +25,7 @@ from .transports import (
     FtpTransport,
     SftpTransport,
     SqlAlchemyTransport,
+    ImapTransport,
 )
 
 __all__ = [
@@ -54,6 +55,7 @@ __all__ = [
     "FtpTransport",
     "SftpTransport",
     "SqlAlchemyTransport",
+    "ImapTransport",
     # NER
     "VocabularyMatcher",
     "EntityMatch",

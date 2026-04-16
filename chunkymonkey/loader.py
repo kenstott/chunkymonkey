@@ -215,6 +215,62 @@ class DocumentLoader:
         )
         return self._enrich(chunks)
 
+    def load_imap(
+        self,
+        uri: str,
+        *,
+        include_attachments: bool = False,
+        limit: int | None = None,
+    ) -> list[DocumentChunk]:
+        """Fetch and index email messages from an IMAP mailbox.
+
+        Each message becomes a separate indexed document.  Attachments are
+        optionally extracted and appended to the message text using the
+        extractor registry.
+
+        Args:
+            uri:                 ``imap[s]://user:pass@host[:port]/mailbox``
+                                 Append ``?search=CRITERIA&limit=N`` for
+                                 server-side filtering (IMAP RFC 3501 syntax).
+            include_attachments: When True, extract and index attachment content
+                                 inline with the message body (default False).
+            limit:               Maximum number of messages to load, most-recent
+                                 first.  Overrides any ``limit`` in the URI.
+
+        Returns:
+            Combined list of DocumentChunk objects from all messages.
+
+        Example::
+
+            chunks = loader.load_imap(
+                "imaps://me@gmail.com:app-password@imap.gmail.com/INBOX",
+                include_attachments=True,
+                limit=100,
+            )
+        """
+        from .transports._imap import ImapTransport
+        from .extractors._email import EmailExtractor
+
+        transport = ImapTransport()
+        extractor = EmailExtractor(include_attachments=include_attachments)
+
+        all_chunks: list[DocumentChunk] = []
+        for result in transport.fetch_messages(uri, limit=limit):
+            try:
+                text = extractor.extract(result.data, source_path=result.source_path)
+                if not text.strip():
+                    continue
+                name = result.source_path or "email"
+                chunks = chunk_document(
+                    name, text,
+                    self.min_chunk_size, self.max_chunk_size, self.overflow_margin,
+                    include_breadcrumb=(self.context_strategy is not None),
+                )
+                all_chunks.extend(self._enrich(chunks))
+            except Exception as exc:
+                logger.warning("load_imap: skipping message %s: %s", result.source_path, exc)
+        return all_chunks
+
     def load_text(self, text: str, name: str) -> list[DocumentChunk]:
         """Skip fetch and extract; chunk and enrich pre-extracted text.
 

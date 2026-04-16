@@ -28,6 +28,7 @@ MIME_TO_SHORT: dict[str, str] = {
     "application/vnd.oasis.opendocument.text": "odt",
     "application/vnd.oasis.opendocument.spreadsheet": "ods",
     "application/vnd.oasis.opendocument.presentation": "odp",
+    "message/rfc822": "email",
     "image/png": "image",
     "image/jpeg": "image",
     "image/tiff": "image",
@@ -69,6 +70,8 @@ EXTENSION_TO_SHORT: dict[str, str] = {
     ".odt": "odt",
     ".ods": "ods",
     ".odp": "odp",
+    ".eml": "email",
+    ".msg": "email",
     ".png": "image",
     ".jpg": "image",
     ".jpeg": "image",
@@ -93,6 +96,7 @@ EXTENSION_TO_SHORT: dict[str, str] = {
 _KNOWN_SHORT: set[str] = {
     "auto", "pdf", "html", "markdown", "text", "csv", "tsv", "json", "jsonl",
     "yaml", "xml", "docx", "xlsx", "pptx", "odt", "ods", "odp", "image", "audio",
+    "email", "eml",
 }
 
 # Legacy transport types — treated as "auto" (transport is now inferred from fields)
@@ -182,6 +186,7 @@ _LOADABLE_MIME_PREFIXES = (
     "application/x-ndjson",
     "application/vnd.openxmlformats",
     "application/vnd.oasis.opendocument",
+    "message/rfc822",
     "application/msword",
     "application/vnd.ms-excel",
     "application/vnd.ms-powerpoint",

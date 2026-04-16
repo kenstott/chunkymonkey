@@ -22,6 +22,7 @@ from ._yaml import YamlExtractor
 from ._markdown import MarkdownExtractor
 from ._csv import CsvExtractor
 from ._odf import OdfExtractor
+from ._email import EmailExtractor
 
 _REGISTRY: list[Extractor] | None = None
 
@@ -39,6 +40,7 @@ def _build_registry() -> list[Extractor]:
         MarkdownExtractor(),
         CsvExtractor(),
         OdfExtractor(),
+        EmailExtractor(),
         XmlExtractor(),
         TextExtractor(),
     ]
@@ -86,6 +88,7 @@ __all__ = [
     "MarkdownExtractor",
     "CsvExtractor",
     "OdfExtractor",
+    "EmailExtractor",
     "XmlExtractor",
     "detect_extractor",
     "register_extractor",

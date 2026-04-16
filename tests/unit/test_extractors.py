@@ -491,3 +491,126 @@ class TestOdfExtractor:
     def test_detect_odp(self):
         from chunkymonkey.extractors._odf import OdfExtractor
         assert isinstance(detect_extractor("odp"), OdfExtractor)
+
+
+# =============================================================================
+# EmailExtractor
+# =============================================================================
+
+def _make_email(
+    subject: str = "Test Subject",
+    from_: str = "alice@example.com",
+    to: str = "bob@example.com",
+    body: str = "Hello, world.",
+    body_type: str = "plain",
+    attachments: list[tuple[str, bytes, str]] | None = None,
+) -> bytes:
+    """Build a minimal RFC 5322 email in memory using stdlib email."""
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+
+    if attachments:
+        msg = MIMEMultipart()
+        msg["Subject"] = subject
+        msg["From"] = from_
+        msg["To"] = to
+        msg["Date"] = "Mon, 14 Apr 2025 10:00:00 +0000"
+        msg.attach(MIMEText(body, body_type))
+        for filename, data, mime_type in attachments:
+            maintype, subtype = mime_type.split("/", 1)
+            part = MIMEBase(maintype, subtype)
+            part.set_payload(data)
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
+    else:
+        msg = MIMEText(body, body_type)
+        msg["Subject"] = subject
+        msg["From"] = from_
+        msg["To"] = to
+        msg["Date"] = "Mon, 14 Apr 2025 10:00:00 +0000"
+
+    return msg.as_bytes()
+
+
+class TestEmailExtractor:
+    def test_extracts_body(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        data = _make_email(body="This is the email body.")
+        result = EmailExtractor().extract(data)
+        assert "This is the email body." in result
+
+    def test_extracts_subject_header(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        data = _make_email(subject="Weekly Report")
+        result = EmailExtractor().extract(data)
+        assert "Subject: Weekly Report" in result
+
+    def test_extracts_from_header(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        data = _make_email(from_="sender@example.com")
+        result = EmailExtractor().extract(data)
+        assert "From:" in result
+        assert "sender@example.com" in result
+
+    def test_extracts_to_header(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        data = _make_email(to="recipient@example.com")
+        result = EmailExtractor().extract(data)
+        assert "To:" in result
+        assert "recipient@example.com" in result
+
+    def test_html_body_stripped(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        data = _make_email(body="<h1>Hello</h1><p>World</p>", body_type="html")
+        result = EmailExtractor().extract(data)
+        assert "<h1>" not in result
+        assert "Hello" in result
+        assert "World" in result
+
+    def test_can_handle_email(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        assert EmailExtractor().can_handle("email")
+
+    def test_can_handle_eml(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        assert EmailExtractor().can_handle("eml")
+
+    def test_cannot_handle_text(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        assert not EmailExtractor().can_handle("text")
+
+    def test_cannot_handle_html(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        assert not EmailExtractor().can_handle("html")
+
+    def test_no_attachments_by_default(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        attachment_data = b"Name,Score\nAlice,90"
+        data = _make_email(
+            body="See attached.",
+            attachments=[("results.csv", attachment_data, "text/csv")],
+        )
+        result = EmailExtractor(include_attachments=False).extract(data)
+        assert "[Attachment:" not in result
+
+    def test_includes_attachments_when_enabled(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        attachment_data = b"Name,Score\nAlice,90"
+        data = _make_email(
+            body="See attached.",
+            attachments=[("results.csv", attachment_data, "text/csv")],
+        )
+        result = EmailExtractor(include_attachments=True).extract(data)
+        assert "[Attachment: results.csv]" in result
+        assert "Alice" in result
+
+    def test_detect_email(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        assert isinstance(detect_extractor("email"), EmailExtractor)
+
+    def test_detect_eml(self):
+        from chunkymonkey.extractors._email import EmailExtractor
+        assert isinstance(detect_extractor("eml"), EmailExtractor)
