@@ -12,6 +12,126 @@ from __future__ import annotations
 import re
 from .models import DocumentChunk
 
+# ── Plain-text header promotion ───────────────────────────────────────────────
+
+_VERB_RE = re.compile(
+    r"\b(is|are|was|were|has|have|had|can|will|may|should|would|could|"
+    r"do|does|did|been|be|being|occur|form|cause|help|provide|include|"
+    r"involve|develop|affect|require|contain|consist|allow|make|take|"
+    r"give|show|use|need|want|seem|appear|become|remain|stay|go|come)\b",
+    re.IGNORECASE,
+)
+
+# Sentence-boundary: after . ! ? followed by whitespace
+_SENT_END_RE = re.compile(r"(?<=[.!?])\s+")
+
+# Short phrase: 1–N words with no ending punctuation, followed by a new capital
+_SHORT_PHRASE_RE = re.compile(
+    r"(?<=[.!?] )"           # after a sentence end + space
+    r"([A-Z][^\n.!?]{2,}?)" # candidate: starts capital, no sentence-end punct
+    r"(?= [A-Z][a-z])",     # immediately followed by capital word (new sentence)
+    re.MULTILINE,
+)
+
+
+def promote_plain_text_headers(
+    text: str,
+    promote_questions: bool = True,
+    promote_short_phrases: bool = True,
+    max_header_words: int = 6,
+    max_header_chars: int = 80,
+) -> str:
+    """Insert markdown ``##`` headers into flat plain text by detecting header-like patterns.
+
+    Two heuristics (each independently togglable):
+
+    * **Questions** (``promote_questions``): A standalone question sentence
+      (ends with ``?``) that is *not* followed immediately by another question
+      is promoted to a ``##`` heading.  Common in patient-education guides and
+      FAQ-style documents where section titles are phrased as questions.
+
+    * **Short phrases** (``promote_short_phrases``): A capitalised phrase of
+      ≤ *max_header_words* words and ≤ *max_header_chars* characters that
+      (a) contains no finite verb, (b) carries no sentence-ending punctuation,
+      and (c) appears between two proper sentences is promoted to ``##``.
+      Targets fused PDF headers such as "Signs and symptoms Basal cell …".
+
+    Args:
+        text:                  Raw plain text (may be a single long string).
+        promote_questions:     Promote standalone question sentences.
+        promote_short_phrases: Promote short verbless phrases as headers.
+        max_header_words:      Phrase word-count ceiling (short-phrase heuristic).
+        max_header_chars:      Phrase char-length ceiling (short-phrase heuristic).
+
+    Returns:
+        Text with qualifying patterns replaced by ``\\n\\n## <header>\\n\\n<body>``.
+    """
+    # Normalise whitespace but preserve paragraph breaks if present
+    has_paras = "\n\n" in text
+    text = re.sub(r"[ \t]+", " ", text).strip()
+
+    if promote_questions:
+        sentences = _SENT_END_RE.split(text)
+        out: list[str] = []
+        i = 0
+        while i < len(sentences):
+            s = sentences[i].strip()
+            next_s = sentences[i + 1].strip() if i + 1 < len(sentences) else ""
+            if (
+                s.endswith("?")
+                and not next_s.endswith("?")           # not a run of questions
+                and len(s.split()) <= max_header_words * 2  # not a paragraph
+                and len(s) <= max_header_chars * 2
+            ):
+                out.append(f"\n\n## {s}\n\n")
+            else:
+                out.append((" " if out and not out[-1].endswith("\n") else "") + s)
+            i += 1
+        text = "".join(out).strip()
+
+    if promote_short_phrases:
+        def _replace_phrase(m: re.Match) -> str:
+            phrase = m.group(1).strip().rstrip(".,;:")
+            words = phrase.split()
+            if (
+                len(words) < 2
+                or len(words) > max_header_words
+                or len(phrase) > max_header_chars
+                or _VERB_RE.search(phrase)
+                or not phrase[0].isupper()
+            ):
+                return m.group(0)  # leave unchanged
+            # Reconstruct: sentence-end + newlines + ## header + newline + next sentence
+            # The lookbehind consumed the sentence-end punct+space; we must keep it
+            return f"\n\n## {phrase}\n\n"
+
+        # We need to rewrite using sub with the full match context
+        # Pattern: after [.!?][space], capture candidate phrase, lookahead for new sentence
+        FULL_RE = re.compile(
+            r"([.!?] )"
+            r"([A-Z][^\n.!?]{2,}?)"
+            r"(?= [A-Z][a-z])",
+            re.MULTILINE,
+        )
+
+        def _full_replace(m: re.Match) -> str:
+            sent_end = m.group(1)
+            phrase = m.group(2).strip().rstrip(".,;:")
+            words = phrase.split()
+            if (
+                len(words) < 2
+                or len(words) > max_header_words
+                or len(phrase) > max_header_chars
+                or _VERB_RE.search(phrase)
+                or not phrase[0].isupper()
+            ):
+                return m.group(0)
+            return f"{sent_end}\n\n## {phrase}\n\n"
+
+        text = FULL_RE.sub(_full_replace, text)
+
+    return text
+
 
 def is_table_line(line: str) -> bool:
     """Detect pipe-separated table rows (DOCX/XLSX/PPTX/HTML/MD formats)."""
@@ -180,6 +300,11 @@ def chunk_document(
     max_chunk_size: int,
     overflow_margin: float = 0.15,
     include_breadcrumb: bool = True,
+    promote_headings: bool = False,
+    promote_questions: bool = True,
+    promote_short_phrases: bool = True,
+    max_header_words: int = 6,
+    max_header_chars: int = 80,
 ) -> list[DocumentChunk]:
     """Split a document into chunks bounded by min_chunk_size and max_chunk_size.
 
@@ -218,8 +343,24 @@ def chunk_document(
             (default 0.15 = 15%).
         include_breadcrumb: Prepend LCA breadcrumb to content (default True).
             Pass False for naive/baseline chunking.
+        promote_headings: Run ``promote_plain_text_headers()`` on *content* before
+            chunking.  Useful for flat plain-text corpora (e.g. PDF-extracted prose)
+            where section titles are fused with body text.  Default False.
+        promote_questions: Passed to ``promote_plain_text_headers``.
+        promote_short_phrases: Passed to ``promote_plain_text_headers``.
+        max_header_words: Passed to ``promote_plain_text_headers``.
+        max_header_chars: Passed to ``promote_plain_text_headers``.
     """
     hard_max = int(max_chunk_size * (1.0 + overflow_margin))
+
+    if promote_headings:
+        content = promote_plain_text_headers(
+            content,
+            promote_questions=promote_questions,
+            promote_short_phrases=promote_short_phrases,
+            max_header_words=max_header_words,
+            max_header_chars=max_header_chars,
+        )
 
     chunks: list[DocumentChunk] = []
     heading_stack: list[tuple[int, str]] = []
@@ -255,6 +396,9 @@ def chunk_document(
     def _flush(text: str, idx: int, offset: int | None) -> DocumentChunk:
         lca = _lca_path(current_section_paths)
         section_str = " > ".join(lca) if lca else None
+        crumb: str | None = None
+        if include_breadcrumb and text:
+            crumb = f"[{name} > {' > '.join(lca)}]" if lca else f"[{name}]"
         full_text = _build_content(text)
         src_len = len(full_text.encode("utf-8")) if full_text else 0
         return DocumentChunk(
@@ -264,6 +408,8 @@ def chunk_document(
             chunk_index=idx,
             source_offset=offset,
             source_length=src_len,
+            breadcrumb=crumb,
+            embedding_content=full_text if include_breadcrumb else None,
         )
 
     def _reset() -> None:

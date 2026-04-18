@@ -33,16 +33,21 @@ class Store:
         self,
         db_path: str | Path = ":memory:",
         embedding_dim: int = 1024,
+        read_only: bool = False,
     ):
         """Create a Store backed by DuckDB.
 
         Args:
             db_path: Path to DuckDB file, or ":memory:" for an in-memory store.
             embedding_dim: Embedding vector dimension. Must match your model.
+            read_only: Open in read-only mode (allows multiple concurrent readers).
         """
         db_path = str(db_path)
-        self._db = ThreadLocalDuckDB(db_path)
+        self._db = ThreadLocalDuckDB(db_path, read_only=read_only)
         self.vector = DuckDBVectorBackend(self._db, embedding_dim=embedding_dim)
+        if read_only:
+            self.relational = None  # type: ignore
+            return
         relational_url = (
             f"duckdb:///{db_path}" if db_path != ":memory:" else "duckdb://"
         )

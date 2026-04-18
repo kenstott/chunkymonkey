@@ -15,6 +15,7 @@ from chunkymonkey import (
     is_list_line,
     is_table_line,
     merge_blocks,
+    promote_plain_text_headers,
 )
 
 
@@ -342,3 +343,102 @@ class TestTableMarkerStrip:
         ]
         result = assemble(chunks)
         assert result == "regular text"
+
+
+# =============================================================================
+# promote_plain_text_headers
+# =============================================================================
+
+class TestPromotePlainTextHeaders:
+    # ── Question heuristic ────────────────────────────────────────────────────
+
+    def test_question_promoted(self):
+        text = "What are the symptoms? Fever and chills are common symptoms."
+        result = promote_plain_text_headers(text, promote_short_phrases=False)
+        assert "## What are the symptoms?" in result
+
+    def test_question_not_promoted_when_followed_by_question(self):
+        text = "What are the symptoms? How is it treated? Treatment involves rest."
+        result = promote_plain_text_headers(text, promote_short_phrases=False)
+        assert "## What are the symptoms?" not in result
+
+    def test_question_disabled(self):
+        text = "What are the symptoms? Fever is common."
+        result = promote_plain_text_headers(text, promote_questions=False, promote_short_phrases=False)
+        assert "##" not in result
+
+    def test_long_question_not_promoted(self):
+        # Exceeds max_header_words * 2 threshold
+        text = "What are the primary clinical symptoms seen in patients with advanced disease? Fever is common."
+        result = promote_plain_text_headers(text, promote_short_phrases=False, max_header_words=4)
+        assert "##" not in result
+
+    # ── Short-phrase heuristic ────────────────────────────────────────────────
+
+    def test_fused_header_promoted(self):
+        # Mirrors real medical corpus pattern: "Signs and symptoms Basal cell..."
+        text = "Introduction. Signs and symptoms Basal cell carcinoma is common."
+        result = promote_plain_text_headers(text, promote_questions=False)
+        assert "## Signs and symptoms" in result
+
+    def test_short_phrase_with_verb_not_promoted(self):
+        # "Cancer is spreading" has finite verb "is"
+        text = "Introduction. Cancer is spreading Basal cell carcinoma is common."
+        result = promote_plain_text_headers(text, promote_questions=False)
+        assert "## Cancer is spreading" not in result
+
+    def test_short_phrase_too_long_not_promoted(self):
+        text = "Introduction. Signs and symptoms of advanced basal cell carcinoma Tumors appear."
+        result = promote_plain_text_headers(text, promote_questions=False, max_header_words=4)
+        assert "##" not in result
+
+    def test_short_phrase_disabled(self):
+        text = "Introduction. Signs and symptoms Basal cell carcinoma is common."
+        result = promote_plain_text_headers(text, promote_short_phrases=False, promote_questions=False)
+        assert "##" not in result
+
+    def test_short_phrase_exceeds_max_chars_not_promoted(self):
+        phrase = "A " * 40  # 80 chars but > default max_header_chars
+        text = f"Introduction. {phrase.strip()} Basal cell carcinoma is common."
+        result = promote_plain_text_headers(text, promote_questions=False)
+        assert "##" not in result
+
+    # ── Integration: chunk_document with promote_headings ─────────────────────
+
+    def test_chunk_document_promote_headings_creates_sections(self):
+        text = "Introduction. Signs and symptoms Basal cell carcinoma is a common skin cancer."
+        chunks = chunk_document(
+            "doc", text, min_chunk_size=10, max_chunk_size=500,
+            promote_headings=True, promote_questions=False,
+        )
+        section_types = {c.chunk_type for c in chunks}
+        assert "section" in section_types or any("Signs and symptoms" in c.content for c in chunks)
+
+    def test_chunk_document_promote_headings_false_default(self):
+        # Without promote_headings, fused text produces no ## headers
+        text = "Introduction. Signs and symptoms Basal cell carcinoma is a common skin cancer."
+        chunks_default = chunk_document("doc", text, min_chunk_size=10, max_chunk_size=500)
+        chunks_promoted = chunk_document(
+            "doc", text, min_chunk_size=10, max_chunk_size=500, promote_headings=True,
+            promote_questions=False,
+        )
+        assert len(chunks_promoted) >= len(chunks_default)
+
+    # ── Output structure ──────────────────────────────────────────────────────
+
+    def test_promoted_header_followed_by_body(self):
+        text = "Introduction. Signs and symptoms Basal cell carcinoma is common."
+        result = promote_plain_text_headers(text, promote_questions=False)
+        idx = result.index("## Signs and symptoms")
+        after = result[idx:].split("\n\n", 2)
+        assert len(after) >= 2 and "Basal cell" in after[1]
+
+    def test_no_double_newline_at_end(self):
+        text = "What are the symptoms? Fever is common."
+        result = promote_plain_text_headers(text, promote_short_phrases=False)
+        assert not result.endswith("\n\n\n")
+
+    def test_plain_text_unchanged_when_no_matches(self):
+        text = "This is a normal sentence. Another normal sentence follows it."
+        result = promote_plain_text_headers(text)
+        assert "##" not in result

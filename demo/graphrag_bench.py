@@ -9,15 +9,16 @@
 Chunky Monkey — GraphRAG-Bench evaluation.
 
 Evaluates contextual chunking against published GraphRAG-Bench leaderboard.
-Uses BGE-large-en-v1.5 embeddings via chunkymonkey Store + GPT-4o-mini generation/judge.
+Uses BGE-large-en-v1.5 embeddings + benchmark's native answer_correctness metric.
 
 Usage:
-    python demo/graphrag_bench.py download  --out-dir /tmp/grb
-    python demo/graphrag_bench.py inspect   --out-dir /tmp/grb
-    python demo/graphrag_bench.py index     --out-dir /tmp/grb [--force]
-    python demo/graphrag_bench.py run       --out-dir /tmp/grb [--limit N]
-    python demo/graphrag_bench.py evalrun   --out-dir /tmp/grb [--judge gpt-4o-mini]
-    python demo/graphrag_bench.py report    --out-dir /tmp/grb
+    python demo/graphrag_bench.py download      --out-dir /tmp/grb
+    python demo/graphrag_bench.py inspect       --out-dir /tmp/grb
+    python demo/graphrag_bench.py index         --out-dir /tmp/grb [--force]
+    python demo/graphrag_bench.py index-vanilla --out-dir /tmp/grb [--force]
+    python demo/graphrag_bench.py run           --out-dir /tmp/grb [--rerank] [--enhanced] [--vanilla] [--run-name NAME]
+    python demo/graphrag_bench.py eval          --out-dir /tmp/grb --run-name <name>
+    python demo/graphrag_bench.py report        --out-dir /tmp/grb
 """
 from __future__ import annotations
 
@@ -48,24 +49,30 @@ from chunkymonkey.storage._store import Store
 
 EMBED_MODEL        = "BAAI/bge-large-en-v1.5"
 EMBED_DIM          = 1024
-GEN_MODEL          = "gpt-4.1"
+GEN_MODEL          = "gpt-4o-mini"
 GEN_MODEL_TOGETHER = "Qwen/Qwen2.5-72B-Instruct-Turbo"   # closest serverless Qwen2.5 (14B not available serverless on Together)
 TOGETHER_BASE_URL  = "https://api.together.xyz/v1"
 K             = 5
 K_FETCH       = 20    # candidates to retrieve before reranking (ignored when --rerank is off)
-RERANK_MODEL  = "BAAI/bge-reranker-large"
+RERANK_MODEL         = "BAAI/bge-reranker-large"       # local cross-encoder
+RERANK_MODEL_TOGETHER = "Salesforce/Llama-Rank-V1.1"   # Together AI reranker API
+RERANK_MODEL_COHERE  = "rerank-english-v3.0"           # Cohere reranker API
 SPACY_MODEL   = "en_core_web_sm"
 MIN_CHUNK     = 400
 MAX_CHUNK     = 1200
 DATASET_NAME  = "GraphRAG-Bench/GraphRAG-Bench"
 SUBSETS       = ["medical", "novel"]
-DB_FILENAME   = "chunkymonkey.duckdb"
+DB_FILENAME         = "chunkymonkey.duckdb"
+VANILLA_DB_FILENAME = "vanilla_rag.duckdb"
+VANILLA_K             = 5     # paper Appendix H.2: retrieval_topk=5
+VANILLA_CHUNK_TOKENS  = 256   # benchmark uses 256-token chunks
+VANILLA_CHUNK_OVERLAP = 32
+VANILLA_TEMPERATURE   = 0.7   # paper: "generation temperature of 0.7"
 
 # Published leaderboard results scraped from graphrag-bench.github.io, April 2026.
 # Avg = mean(Fact ACC, Reason ACC, Summ ACC, Creative ACC) for each subset.
 # Original scale is 0–100%; stored here as 0–1.
-# Our run uses Qwen2.5-14B generator + GPT-4.1 judge.
-# Published leaderboard uses Qwen2.5-14B generator + GPT-4-turbo judge.
+# Published leaderboard uses gpt-4o-mini generator + gpt-4o-mini judge (answer_correctness metric).
 PUBLISHED_BASELINES = {
     # ── Top methods ───────────────────────────────────────────────────────────
     "G-reasoner":               {"med_acc": 0.7330, "nov_acc": 0.5894, "overall": 0.6612},
@@ -255,6 +262,26 @@ def _build_corpus(out_dir: Path) -> list[tuple[str, str]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Naive chunker (vanilla RAG baseline)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _naive_chunks(text: str,
+                  chunk_tokens: int = VANILLA_CHUNK_TOKENS,
+                  overlap_tokens: int = VANILLA_CHUNK_OVERLAP) -> list[str]:
+    """Split text into fixed-size token chunks with overlap using BGE BERT tokenizer."""
+    from transformers import AutoTokenizer
+    enc = AutoTokenizer.from_pretrained(EMBED_MODEL)
+    tokens = enc.encode(text, add_special_tokens=False)
+    step = max(1, chunk_tokens - overlap_tokens)
+    result = []
+    for start in range(0, len(tokens), step):
+        chunk = enc.decode(tokens[start:start + chunk_tokens])
+        if chunk.strip():
+            result.append(chunk)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Phase 2: Index (chunk + embed + store via chunkymonkey)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -326,11 +353,76 @@ def cmd_index(args: argparse.Namespace) -> None:
     print(f"Index complete: {n:,} chunks → {db_path}")
 
 
+def cmd_index_vanilla(args: argparse.Namespace) -> None:
+    """Build vanilla RAG index: naive 256-token fixed chunks, no breadcrumbs."""
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+    from chunkymonkey.models import DocumentChunk
+
+    out_dir  = Path(args.out_dir)
+    data_dir = out_dir / "data"
+    db_path  = data_dir / VANILLA_DB_FILENAME
+
+    if db_path.exists() and not args.force:
+        with Store(db_path, embedding_dim=EMBED_DIM) as store:
+            n = store.count()
+        print(f"Vanilla index exists: {n:,} chunks at {db_path}")
+        print("Use --force to reindex.")
+        return
+
+    if db_path.exists() and args.force:
+        db_path.unlink()
+        print(f"Removed existing index: {db_path}")
+
+    corpus = _build_corpus(out_dir)
+    print(f"Corpus: {len(corpus)} documents")
+    print(f"Naive chunking: {VANILLA_CHUNK_TOKENS}-token chunks, {VANILLA_CHUNK_OVERLAP}-token overlap...")
+
+    all_chunks: list[DocumentChunk] = []
+    for doc_id, text in corpus:
+        for i, chunk_text in enumerate(_naive_chunks(text)):
+            all_chunks.append(DocumentChunk(
+                document_name=doc_id,
+                chunk_index=i,
+                content=chunk_text,
+                breadcrumb="",
+                embedding_content=chunk_text,
+            ))
+
+    print(f"Total vanilla chunks: {len(all_chunks):,}")
+    avg = sum(len(c.content) for c in all_chunks) / max(1, len(all_chunks))
+    print(f"Avg chunk size: {avg:.0f} chars")
+
+    print(f"Embedding {len(all_chunks):,} chunks with {EMBED_MODEL}...")
+    model = SentenceTransformer(EMBED_MODEL)
+    texts = [c.content for c in all_chunks]
+
+    batch_size = 256
+    embeddings = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        vecs  = model.encode(batch, show_progress_bar=False, normalize_embeddings=True)
+        embeddings.append(vecs)
+        done = min(i + batch_size, len(texts))
+        if (i // batch_size) % 10 == 0:
+            print(f"  {done:,}/{len(texts):,}")
+
+    emb = np.vstack(embeddings).astype("float32")
+    print(f"Embeddings: {emb.shape}")
+
+    print(f"Storing in {db_path}...")
+    with Store(db_path, embedding_dim=EMBED_DIM) as store:
+        store.add_document(all_chunks, emb)
+        n = store.count()
+    print(f"Vanilla index complete: {n:,} chunks → {db_path}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 3: Retrieve + generate
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _generate(question: str, context: str, client, model: str = GEN_MODEL) -> str:
+def _generate(question: str, context: str, client, model: str = GEN_MODEL,
+              temperature: float = 0.0) -> str:
     resp = client.chat.completions.create(
         model=model,
         messages=[
@@ -341,7 +433,7 @@ def _generate(question: str, context: str, client, model: str = GEN_MODEL) -> st
             {"role": "user",
              "content": f"Context:\n{context}\n\nQuestion: {question}"},
         ],
-        temperature=0.0,
+        temperature=temperature,
         max_tokens=500,
     )
     return resp.choices[0].message.content.strip()
@@ -395,11 +487,31 @@ def cmd_run(args: argparse.Namespace) -> None:
     results_dir = out_dir / "results"
     results_dir.mkdir(exist_ok=True)
     run_name     = getattr(args, "run_name", "contextual")
+
+    # Kill any stale processes already running the same run-name
+    import signal, subprocess as _sp
+    _my_pid = os.getpid()
+    try:
+        _procs = _sp.check_output(
+            ["pgrep", "-f", f"graphrag_bench.py.*--run-name {run_name}"],
+            text=True,
+        ).split()
+        for _pid in _procs:
+            _pid = int(_pid)
+            if _pid != _my_pid:
+                os.kill(_pid, signal.SIGKILL)
+                print(f"[preflight] killed stale pid {_pid} ({run_name})", flush=True)
+    except _sp.CalledProcessError:
+        pass  # no matching processes
     results_f    = results_dir / f"{run_name}.jsonl"
     ckpt_f       = results_dir / f"{run_name}_checkpoint.jsonl"
-    db_path      = data_dir / DB_FILENAME
-    use_rerank   = getattr(args, "rerank", False)
-    use_enhanced = getattr(args, "enhanced", False)
+    use_vanilla  = getattr(args, "vanilla", False)
+    db_path      = data_dir / (VANILLA_DB_FILENAME if use_vanilla else DB_FILENAME)
+    top_k        = VANILLA_K if use_vanilla else K
+    gen_temperature = VANILLA_TEMPERATURE  # paper: 0.7 for all systems
+    use_rerank        = getattr(args, "rerank", False)
+    rerank_provider   = getattr(args, "rerank_provider", "local")
+    use_enhanced      = getattr(args, "enhanced", False)
 
     if not db_path.exists():
         print("No index found. Run 'index' first.")
@@ -454,17 +566,28 @@ def cmd_run(args: argparse.Namespace) -> None:
     q_vecs = all_vecs[pending_indices]
 
     # ── 2. Retrieve context for each question (sequential; DuckDB conn is serialized)
-    fetch_k = K_FETCH if use_rerank else K
-    print(f"Retrieving context from index (fetch_k={fetch_k}, rerank={use_rerank}, enhanced={use_enhanced})...")
+    fetch_k = K_FETCH if use_rerank else top_k
+    print(f"Retrieving context from index (fetch_k={fetch_k}, k={top_k}, rerank={use_rerank}, enhanced={use_enhanced}, vanilla={use_vanilla})...")
 
     reranker = None
+    together_rerank_client = None
+    cohere_rerank_client = None
     if use_rerank:
-        from sentence_transformers import CrossEncoder
-        print(f"Loading reranker: {RERANK_MODEL}...")
-        reranker = CrossEncoder(RERANK_MODEL)
+        if rerank_provider == "together":
+            from together import Together
+            together_rerank_client = Together(api_key=os.environ["TOGETHER_API_KEY"])
+            print(f"Using Together reranker: {RERANK_MODEL_TOGETHER}")
+        elif rerank_provider == "cohere":
+            import cohere
+            cohere_rerank_client = cohere.ClientV2(api_key=os.environ["COHERE_API_KEY"])
+            print(f"Using Cohere reranker: {RERANK_MODEL_COHERE}")
+        else:
+            from sentence_transformers import CrossEncoder
+            print(f"Loading reranker: {RERANK_MODEL}...")
+            reranker = CrossEncoder(RERANK_MODEL)
 
     work_items: list[dict] = []
-    with Store(db_path, embedding_dim=EMBED_DIM) as store:
+    with Store(db_path, embedding_dim=EMBED_DIM, read_only=True) as store:
         enhanced_search = _build_enhanced_search(store) if use_enhanced else None
 
         for j, (i, q) in enumerate(pending):
@@ -478,13 +601,31 @@ def cmd_run(args: argparse.Namespace) -> None:
                     query_text=q["question"],
                     include_breadcrumbs=False,
                 )
-            if use_rerank and reranker is not None:
+            if use_rerank and together_rerank_client is not None:
+                docs   = [chunk.content for _, _, chunk in hits]
+                resp   = together_rerank_client.rerank.create(
+                    model=RERANK_MODEL_TOGETHER,
+                    query=q["question"],
+                    documents=docs,
+                    top_n=top_k,
+                )
+                hits   = [hits[r.index] for r in resp.results]
+            elif use_rerank and cohere_rerank_client is not None:
+                docs   = [chunk.content for _, _, chunk in hits]
+                resp   = cohere_rerank_client.rerank(
+                    model=RERANK_MODEL_COHERE,
+                    query=q["question"],
+                    documents=docs,
+                    top_n=top_k,
+                )
+                hits   = [hits[r.index] for r in resp.results]
+            elif use_rerank and reranker is not None:
                 pairs  = [(q["question"], chunk.content) for _, _, chunk in hits]
                 scores = reranker.predict(pairs)
-                ranked = sorted(zip(scores, hits), key=lambda x: x[0], reverse=True)[:K]
+                ranked = sorted(zip(scores, hits), key=lambda x: x[0], reverse=True)[:top_k]
                 hits   = [h for _, h in ranked]
             elif not use_rerank:
-                hits = hits[:K]
+                hits = hits[:top_k]
             work_items.append({
                 "_slot":      len(work_items),   # for round-robin endpoint selection
                 "qid":        qid,
@@ -523,7 +664,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         model  = endpoint_ids[slot]
         for attempt in range(3):
             try:
-                answer = _generate(item["question"], item["context"], client, model)
+                answer = _generate(item["question"], item["context"], client, model,
+                                   temperature=gen_temperature)
                 break
             except Exception as exc:
                 if attempt == 2:
@@ -588,285 +730,295 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 4/5: Evaluate
+# Phase 4: Evaluate (benchmark's native metric)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_JUDGE_ACCURACY_PROMPT = """\
-You are evaluating a RAG system answer against a gold reference answer.
 
-Question: {question}
-Gold answer: {gold}
-Generated answer: {generated}
+# ─────────────────────────────────────────────────────────────────────────────
+# Together dedicated endpoint lifecycle
+# ─────────────────────────────────────────────────────────────────────────────
 
-Score the generated answer:
-2 = Correct and complete (captures the key information in the gold answer)
-1 = Partially correct (captures some but not all key information)
-0 = Incorrect or irrelevant
-
-Respond with a single integer (0, 1, or 2) and nothing else."""
-
-_JUDGE_COVERAGE_PROMPT = """\
-You are evaluating whether a retrieved context contains enough information to answer a question.
-
-Question: {question}
-Gold answer: {gold}
-Retrieved context: {context}
-
-Does the retrieved context contain sufficient information to produce the gold answer?
-2 = Yes, the context clearly contains the information needed
-1 = Partially — context has some relevant information but is incomplete
-0 = No — the context does not contain the necessary information
-
-Respond with a single integer (0, 1, or 2) and nothing else."""
-
-
-def _llm_judge(prompt: str, client, model: str) -> float:
-    for attempt in range(3):
-        try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                max_tokens=20,
-            )
-            text = resp.choices[0].message.content.strip()
-            m    = re.search(r"[012]", text)
-            return int(m.group()) / 2.0 if m else 0.0
-        except Exception:
-            if attempt == 2:
-                return 0.0
-            time.sleep(2 ** attempt)
-    return 0.0
-
-
-def _rouge_l(reference: str, hypothesis: str) -> float:
-    """Sentence-level ROUGE-L F1."""
-    try:
-        from rouge_score import rouge_scorer
-        scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=True)
-        return scorer.score(reference, hypothesis)["rougeL"].fmeasure
-    except Exception:
-        ref_tokens = reference.lower().split()
-        hyp_tokens = hypothesis.lower().split()
-        if not ref_tokens or not hyp_tokens:
-            return 0.0
-        m, n = len(ref_tokens), len(hyp_tokens)
-        dp = [[0] * (n + 1) for _ in range(m + 1)]
-        for i in range(1, m + 1):
-            for j in range(1, n + 1):
-                dp[i][j] = dp[i-1][j-1] + 1 if ref_tokens[i-1] == hyp_tokens[j-1] else max(dp[i-1][j], dp[i][j-1])
-        lcs = dp[m][n]
-        p = lcs / n if n else 0.0
-        r = lcs / m if m else 0.0
-        return 2 * p * r / (p + r) if (p + r) > 0 else 0.0
-
-
-def cmd_evalrun(args: argparse.Namespace) -> None:
-    import threading
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    import openai
+def cmd_bench_eval(args: argparse.Namespace) -> None:
+    """Run benchmark's native generation_eval.py on our output with checkpointing."""
+    import asyncio
+    import sys
+    import numpy as np
 
     out_dir     = Path(args.out_dir)
     results_dir = out_dir / "results"
+    repo_dir    = out_dir / "GraphRAG-Benchmark"
     run_name    = getattr(args, "run_name", "contextual")
     results_f   = results_dir / f"{run_name}.jsonl"
-    judge_slug  = args.judge.replace('-','_').replace('.','_')
-    eval_f      = results_dir / f"eval_{run_name}_{judge_slug}.jsonl"
-    ckpt_f      = results_dir / f"eval_ckpt_{run_name}_{judge_slug}.jsonl"
+    ckpt_f      = results_dir / f"bench_eval_ckpt_{run_name}.jsonl"
+    out_f       = results_dir / f"bench_eval_{run_name}.json"
 
     if not results_f.exists():
-        print("No results found. Run 'run' first.")
+        print(f"No results found: {results_f}. Run 'run' first.")
+        return
+    if not repo_dir.exists():
+        print(f"Benchmark repo not found at {repo_dir}. Run 'download' first.")
         return
 
-    results = [json.loads(line) for line in open(results_f)]
+    # Load our results
+    records = [json.loads(line) for line in open(results_f)]
     if args.limit:
-        results = results[:args.limit]
-    print(f"Evaluating {len(results)} results with judge={args.judge}")
+        records = records[:args.limit]
 
-    done_ids: set[str] = set()
+    # Convert to benchmark format
+    bench_records = [{
+        "id":            r["id"],
+        "question":      r["question"],
+        "question_type": r["question_type"],
+        "generated_answer": r["generated_answer"],
+        "ground_truth":  r.get("gold_answer") or r.get("ground_truth", ""),
+        "context":       [r["context"]],
+    } for r in records]
+
+    # Load checkpoint
+    done: dict[str, dict] = {}
     if ckpt_f.exists():
-        with open(ckpt_f) as f:
-            for line in f:
-                done_ids.add(json.loads(line)["id"])
-        print(f"Resuming: {len(done_ids)} already evaluated")
+        for line in open(ckpt_f):
+            item = json.loads(line)
+            done[item["id"]] = item
+        print(f"Resuming bench-eval: {len(done)} already done")
 
-    pending = [r for r in results if r["id"] not in done_ids]
-    print(f"Pending: {len(pending)} — using {args.concurrency} parallel workers")
+    pending = [r for r in bench_records if r["id"] not in done]
+    print(f"Pending: {len(pending)} samples")
 
-    client    = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=60.0)
-    # Flat pool: submit acc + cov as separate tasks, collect by result id
-    # avoids nested ThreadPoolExecutor thread exhaustion
-    partials: dict[str, dict] = {}  # id → partial eval record
-    ckpt_lock = threading.Lock()
-    new_evals: list[dict] = []
-    done_count = [len(done_ids)]
+    if not pending:
+        print("All samples already evaluated.")
+    else:
+        # Add benchmark repo to path
+        sys.path.insert(0, str(repo_dir))
+        from pydantic import SecretStr
+        from langchain_openai import ChatOpenAI
+        from Evaluation.metrics import (
+            compute_answer_correctness, compute_coverage_score,
+            compute_faithfulness_score, compute_rouge_score,
+        )
 
-    def _judge_task(r: dict, kind: str) -> tuple[str, str, float]:
-        """Returns (result_id, kind, score)."""
-        if kind == "acc":
-            prompt = _JUDGE_ACCURACY_PROMPT.format(
-                question=r["question"],
-                gold=r["gold_answer"][:800],
-                generated=r["generated_answer"][:800],
+        from tenacity import retry, wait_exponential, retry_if_exception_type, stop_after_attempt
+        import httpx
+
+        judge_provider = getattr(args, "judge_provider", "openai")
+        _judge_kwargs = dict(
+            model=args.judge,
+            temperature=0.0,
+            top_p=1,
+            seed=42,
+            presence_penalty=0,
+            frequency_penalty=0,
+            max_retries=3,
+            timeout=30,
+        )
+        if judge_provider == "together":
+            llm = ChatOpenAI(
+                **_judge_kwargs,
+                base_url="https://api.together.xyz/v1",
+                api_key=SecretStr(os.environ["TOGETHER_API_KEY"]),
             )
         else:
-            prompt = _JUDGE_COVERAGE_PROMPT.format(
-                question=r["question"],
-                gold=r["gold_answer"][:800],
-                context=r["context"][:1500],
+            llm = ChatOpenAI(
+                **_judge_kwargs,
+                base_url="https://api.openai.com/v1",
+                api_key=SecretStr(os.environ["OPENAI_API_KEY"]),
             )
-        return (r["id"], kind, _llm_judge(prompt, client, args.judge))
 
-    # Pre-compute rouge (CPU-only, fast) and index pending by id
-    pending_by_id = {r["id"]: r for r in pending}
-    rouge_map = {r["id"]: _rouge_l(r["gold_answer"], r["generated_answer"]) for r in pending}
+        # ── Pre-compute embeddings in one batched pass ──────────────────────
+        # Ground truth embeddings are shared across runs; cache to disk.
+        from sentence_transformers import SentenceTransformer
+        from langchain_core.embeddings import Embeddings as LCEmbeddings
 
-    # Submit all acc + cov tasks flat — 2 tasks per result
-    # Interleave acc+cov per result so pairs complete quickly, not all-acc then all-cov
-    tasks = [(r, k) for r in pending for k in ("acc", "cov")]
+        gt_cache_f = out_dir / "data" / "gt_embeddings.npy"
+        gt_id_f    = out_dir / "data" / "gt_embedding_ids.json"
 
-    with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-        futures = {executor.submit(_judge_task, r, kind): (r, kind) for r, kind in tasks}
-        for fut in as_completed(futures):
-            rid, kind, score = fut.result()
-            with ckpt_lock:
-                if rid not in partials:
-                    partials[rid] = {}
-                partials[rid][kind] = score
-                if "acc" in partials[rid] and "cov" in partials[rid]:
-                    src = pending_by_id[rid]
-                    ev = {
-                        "id":            rid,
-                        "source":        src["source"],
-                        "question_type": src["question_type"],
-                        "accuracy":      partials[rid]["acc"],
-                        "coverage":      partials[rid]["cov"],
-                        "rouge_l":       rouge_map[rid],
-                    }
-                    new_evals.append(ev)
-                    done_count[0] += 1
-                    total = done_count[0]
-                    if total % 50 == 0:
-                        print(f"  {total}/{len(results)}", flush=True)
-                    if len(new_evals) % 100 == 0:
-                        with open(ckpt_f, "a") as f:
-                            for e in new_evals[-100:]:
-                                f.write(json.dumps(e) + "\n")
-                        print(f"  {total}/{len(results)}  (checkpoint saved)", flush=True)
+        embed_model = SentenceTransformer(EMBED_MODEL)
 
-    # Final flush remainder
-    with open(ckpt_f, "a") as f:
-        remainder = len(new_evals) % 100
-        if remainder:
-            for e in new_evals[-remainder:]:
-                f.write(json.dumps(e) + "\n")
+        # Ground truth embeddings (cached globally)
+        gt_texts = [r["ground_truth"] for r in bench_records]
+        gt_ids   = [r["id"] for r in bench_records]
+        if gt_cache_f.exists() and gt_id_f.exists() and json.loads(gt_id_f.read_text()) == gt_ids:
+            print(f"Loading cached ground-truth embeddings...")
+            gt_vecs = np.load(str(gt_cache_f))
+        else:
+            print(f"Encoding {len(gt_texts)} ground-truth texts (batched)...")
+            gt_vecs = embed_model.encode(
+                gt_texts, batch_size=32, normalize_embeddings=True,
+                show_progress_bar=False,
+            ).astype("float32")
+            np.save(str(gt_cache_f), gt_vecs)
+            gt_id_f.write_text(json.dumps(gt_ids))
+            print(f"  Cached → {gt_cache_f}")
 
-    all_evals: list[dict] = []
-    if ckpt_f.exists():
-        with open(ckpt_f) as f:
-            for line in f:
-                all_evals.append(json.loads(line))
-    ckpt_ids = {e["id"] for e in all_evals}
-    for e in new_evals:
-        if e["id"] not in ckpt_ids:
-            all_evals.append(e)
+        # Answer embeddings (per run — only pending items)
+        ans_texts  = [r["generated_answer"] for r in pending]
+        print(f"Encoding {len(ans_texts)} generated answers (batched)...")
+        ans_vecs = embed_model.encode(
+            ans_texts, batch_size=32, normalize_embeddings=True,
+            show_progress_bar=False,
+        ).astype("float32")
+        del embed_model  # free memory
 
-    with open(eval_f, "w") as f:
-        for e in all_evals:
-            f.write(json.dumps(e) + "\n")
+        # Build lookup: text → embedding vector
+        emb_lookup: dict[str, np.ndarray] = {}
+        for r, vec in zip(bench_records, gt_vecs):
+            emb_lookup[r["ground_truth"]] = vec
+        for r, vec in zip(pending, ans_vecs):
+            emb_lookup[r["generated_answer"]] = vec
 
-    print(f"\nEvaluation complete: {len(all_evals)} records → {eval_f}")
-    _print_eval_summary(all_evals)
+        class CachedEmbeddings(LCEmbeddings):
+            """Returns pre-computed embeddings by text lookup; never calls the model."""
+            def embed_documents(self, texts):
+                return [emb_lookup[t].tolist() for t in texts]
+            def embed_query(self, text):
+                return emb_lookup[text].tolist()
+            async def aembed_query(self, text):
+                return emb_lookup[text].tolist()
+            async def aembed_documents(self, texts):
+                return [emb_lookup[t].tolist() for t in texts]
+
+        embedding = CachedEmbeddings()
+
+        METRIC_CONFIG = {
+            "Fact Retrieval":       ["rouge_score", "answer_correctness"],
+            "Complex Reasoning":    ["rouge_score", "answer_correctness"],
+            "Contextual Summarize": ["answer_correctness", "coverage_score"],
+            "Creative Generation":  ["answer_correctness", "coverage_score", "faithfulness"],
+        }
+
+        semaphore = asyncio.Semaphore(args.concurrency)
+
+        async def _eval_one(r: dict) -> dict:
+            import asyncio as _aio
+            qtype   = r["question_type"]
+            metrics = METRIC_CONFIG.get(qtype, ["answer_correctness"])
+            result  = {"id": r["id"], "question_type": qtype}
+            async with semaphore:
+                for attempt in range(5):
+                    try:
+                        tasks = {}
+                        if "rouge_score" in metrics:
+                            tasks["rouge_score"] = compute_rouge_score(r["generated_answer"], r["ground_truth"])
+                        if "answer_correctness" in metrics:
+                            tasks["answer_correctness"] = compute_answer_correctness(
+                                r["question"], r["generated_answer"], r["ground_truth"], llm, embedding
+                            )
+                        if "coverage_score" in metrics:
+                            tasks["coverage_score"] = compute_coverage_score(
+                                r["question"], r["ground_truth"], r["generated_answer"], llm
+                            )
+                        if "faithfulness" in metrics:
+                            tasks["faithfulness"] = compute_faithfulness_score(
+                                r["question"], r["generated_answer"], r["context"], llm
+                            )
+                        vals = await asyncio.gather(*tasks.values(), return_exceptions=True)
+                        for key, val in zip(tasks.keys(), vals):
+                            if isinstance(val, BaseException):
+                                print(f"[eval] {r['id']} {key} exception: {type(val).__name__}: {val}", flush=True)
+                            result[key] = float(val) if isinstance(val, (int, float)) else float("nan")
+                        break
+                    except Exception as e:
+                        if "429" in str(e) or "rate_limit" in str(e).lower():
+                            await _aio.sleep(10 * (2 ** attempt))
+                        else:
+                            for key in METRIC_CONFIG.get(qtype, ["answer_correctness"]):
+                                result.setdefault(key, float("nan"))
+                            break
+            return result
+
+        async def _run_all():
+            import asyncio as _aio
+            batch_size = 10
+            for batch_start in range(0, len(pending), batch_size):
+                batch = pending[batch_start:batch_start + batch_size]
+                results_batch = await _aio.gather(*[_eval_one(r) for r in batch], return_exceptions=True)
+                with open(ckpt_f, "a") as f:
+                    for item in results_batch:
+                        if isinstance(item, dict):
+                            done[item["id"]] = item
+                            f.write(json.dumps(item) + "\n")
+                completed = min(batch_start + batch_size, len(pending))
+                print(f"  {completed}/{len(pending)} evaluated", flush=True)
+                await _aio.sleep(3)   # pace between batches to avoid TPM burst
+
+        asyncio.run(_run_all())
+
+    # Aggregate results by question type
+    by_type: dict[str, list] = defaultdict(list)
+    for item in done.values():
+        by_type[item["question_type"]].append(item)
+
+    aggregated: dict[str, dict] = {}
+    for qtype, items in by_type.items():
+        agg: dict[str, float] = {}
+        for key in ["rouge_score", "answer_correctness", "coverage_score", "faithfulness"]:
+            vals = [i[key] for i in items if key in i and not (isinstance(i[key], float) and i[key] != i[key])]
+            if vals:
+                agg[key] = float(np.nanmean(vals))
+        aggregated[qtype] = agg
+
+    with open(out_f, "w") as f:
+        json.dump(aggregated, f, indent=2)
+    print(f"\nBench eval complete → {out_f}")
+    for qtype, scores in aggregated.items():
+        print(f"  {qtype}: " + ", ".join(f"{k}={v:.3f}" for k, v in scores.items()))
 
 
-def _print_eval_summary(evals: list[dict]) -> None:
-    by_source: dict[str, list] = defaultdict(list)
-    by_type:   dict[str, list] = defaultdict(list)
-    for e in evals:
-        by_source[e["source"]].append(e)
-        by_type[e["question_type"]].append(e)
-
-    def _avg(records, key):
-        vals = [r[key] for r in records if r.get(key) is not None]
-        return sum(vals) / len(vals) if vals else float("nan")
-
-    print("\n── Results by subset ──")
-    print(f"  {'Subset':<16}  {'N':>5}  {'Accuracy':>9}  {'Coverage':>9}  {'ROUGE-L':>8}")
-    print("  " + "─" * 54)
-    all_combined = []
-    for src, recs in sorted(by_source.items()):
-        all_combined.extend(recs)
-        print(f"  {src:<16}  {len(recs):>5}  {_avg(recs,'accuracy'):>9.3f}"
-              f"  {_avg(recs,'coverage'):>9.3f}  {_avg(recs,'rouge_l'):>8.3f}")
-    print(f"  {'OVERALL':<16}  {len(all_combined):>5}  {_avg(all_combined,'accuracy'):>9.3f}"
-          f"  {_avg(all_combined,'coverage'):>9.3f}  {_avg(all_combined,'rouge_l'):>8.3f}")
-
-    print("\n── Results by question type ──")
-    print(f"  {'Type':<28}  {'N':>5}  {'Accuracy':>9}  {'Coverage':>9}  {'ROUGE-L':>8}")
-    print("  " + "─" * 66)
-    for qt, recs in sorted(by_type.items()):
-        print(f"  {qt:<28}  {len(recs):>5}  {_avg(recs,'accuracy'):>9.3f}"
-              f"  {_avg(recs,'coverage'):>9.3f}  {_avg(recs,'rouge_l'):>8.3f}")
-
-    no_creative = [e for e in evals if e["question_type"] != "Creative Generation"]
-    if len(no_creative) < len(evals):
-        print(f"\n── Without Creative Generation (n={len(no_creative)}) ──")
-        print(f"  Accuracy: {_avg(no_creative,'accuracy'):.3f}"
-              f"  Coverage: {_avg(no_creative,'coverage'):.3f}"
-              f"  ROUGE-L:  {_avg(no_creative,'rouge_l'):.3f}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Phase 6: Report
-# ─────────────────────────────────────────────────────────────────────────────
-
-def cmd_report(args: argparse.Namespace) -> None:
+def cmd_bench_report(args: argparse.Namespace) -> None:
+    """Combined matrix: our runs + full leaderboard, scored with benchmark's native metric."""
     out_dir     = Path(args.out_dir)
     results_dir = out_dir / "results"
 
-    # Exclude checkpoint files; sort by modification time (oldest first)
-    eval_files = sorted(
-        (f for f in results_dir.glob("eval_*.jsonl")
-         if not f.stem.startswith("eval_ckpt_")),
-        key=lambda f: f.stat().st_mtime,
-    )
-    if not eval_files:
-        print("No evaluation files found. Run 'evalrun' first.")
-        return
+    # Discover all bench_eval_*.json files
+    run_results: dict[str, dict] = {}
+    for p in sorted(results_dir.glob("bench_eval_*.json")):
+        if "ckpt" in p.stem:
+            continue
+        run_name = p.stem.replace("bench_eval_", "")
+        data = json.loads(p.read_text())
+        # Compute avg answer_correctness across all question types
+        scores = []
+        med_scores, nov_scores = [], []
+        for _qtype, metrics in data.items():
+            ac = metrics.get("answer_correctness", float("nan"))
+            if ac == ac:  # not nan
+                scores.append(ac)
+        run_results[run_name] = {"scores_by_type": data, "avg_acc": float(sum(scores)/len(scores)) if scores else float("nan")}
 
-    print("=" * 72)
-    print("Chunky Monkey — GraphRAG-Bench Results")
-    print("=" * 72)
+    # Load source info to split med/nov
+    # For now just print overall (splitting requires per-item source which bench_eval aggregates away)
+    QUESTION_TYPES = ["Fact Retrieval", "Complex Reasoning", "Contextual Summarize", "Creative Generation"]
 
-    for eval_f in eval_files:
-        judge = eval_f.stem.replace("eval_", "").replace("_", "-")
-        evals = [json.loads(line) for line in open(eval_f)]
-        print(f"\nJudge: {judge}  ({len(evals)} questions evaluated)")
-        _print_eval_summary(evals)
+    print("\n── Benchmark Eval Results (answer_correctness, benchmark native metric) ──\n")
+    header = f"  {'Run':<28}  {'Fact':>7}  {'Reason':>7}  {'Summ':>7}  {'Creative':>9}  {'Avg':>7}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
 
-    # Use most recently modified eval file for comparison table
-    latest_eval = max(eval_files, key=lambda f: f.stat().st_mtime)
+    for run_name, info in run_results.items():
+        d = info["scores_by_type"]
+        fact  = d.get("Fact Retrieval",       {}).get("answer_correctness", float("nan"))
+        rsn   = d.get("Complex Reasoning",    {}).get("answer_correctness", float("nan"))
+        summ  = d.get("Contextual Summarize", {}).get("answer_correctness", float("nan"))
+        crea  = d.get("Creative Generation",  {}).get("answer_correctness", float("nan"))
+        vals  = [v for v in [fact, rsn, summ, crea] if v == v]
+        avg   = sum(vals) / len(vals) if vals else float("nan")
+        fmt   = lambda v: f"{v:.3f}" if v == v else "  —  "  # noqa: E731
+        print(f"  {run_name:<28}  {fmt(fact):>7}  {fmt(rsn):>7}  {fmt(summ):>7}  {fmt(crea):>9}  {fmt(avg):>7}")
 
-    print("\n── Comparison vs Published Leaderboard ──")
-    judge_name = latest_eval.stem.replace("eval_", "").replace("_", "-")
-    print(f"(Using: {latest_eval.name} — judge: {judge_name})")
-    print(f"\n  {'Strategy':<24}  {'Med Acc':>8}  {'Nov Acc':>8}  {'Overall':>8}")
-    print("  " + "─" * 56)
-    if eval_files:
-        evals = [json.loads(line) for line in open(latest_eval)]
-        med_evals = [e for e in evals if e["source"] == "Medical"]
-        nov_evals = [e for e in evals if e["source"] != "Medical"]
-        med_acc = sum(e["accuracy"] for e in med_evals) / max(1, len(med_evals))
-        nov_acc = sum(e["accuracy"] for e in nov_evals) / max(1, len(nov_evals))
-        overall = sum(e["accuracy"] for e in evals) / max(1, len(evals))
-        print(f"  {'Contextual (ours)':<24}  {med_acc:>8.3f}  {nov_acc:>8.3f}  {overall:>8.3f}")
+    # Leaderboard (their metric, gpt-4o-mini generator + judge)
+    # Qwen2.5-14B appendix numbers from paper (Table 7, RAG w/ rerank)
+    # Combined med+nov avg per question type is not directly available — showing overall acc
+    print("\n── Published Leaderboard (Qwen2.5-14B generator, gpt-4o-mini judge) ──\n")
+    print(f"  {'Method':<28}  {'Med ACC':>8}  {'Nov ACC':>8}  {'Overall':>8}")
+    print("  " + "-" * 58)
     for name, scores in PUBLISHED_BASELINES.items():
         med = f"{scores['med_acc']:.3f}" if scores["med_acc"] is not None else "   —"
         nov = f"{scores['nov_acc']:.3f}" if scores["nov_acc"] is not None else "   —"
         ov  = f"{scores['overall']:.3f}" if scores["overall"] is not None else "   —"
-        print(f"  {name:<24}  {med:>8}  {nov:>8}  {ov:>8}")
-    print(f"\n  * Leaderboard (graphrag-bench.github.io, Apr 2026): Qwen2.5-14B generator + GPT-4-turbo judge.")
-    print(f"  * Our run: Qwen2.5-14B generator + {judge_name} judge.")
+        print(f"  {name:<28}  {med:>8}  {nov:>8}  {ov:>8}")
+
+    print(f"\n  * Leaderboard: gpt-4o-mini generator + gpt-4o-mini judge (main results).")
+    print(f"  * Our bench-eval: gpt-4o-mini judge, same answer_correctness metric.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -899,7 +1051,7 @@ def cmd_use_endpoints(args: argparse.Namespace) -> None:
         concurrency=20,
         run_name=run_name,
     )
-    cmd_evalrun(eval_args)
+    cmd_bench_eval(eval_args)
 
 
 def cmd_provision(args: argparse.Namespace) -> None:
@@ -969,7 +1121,7 @@ def cmd_provision(args: argparse.Namespace) -> None:
             limit=None,
             concurrency=20,
         )
-        cmd_evalrun(eval_args)
+        cmd_bench_eval(eval_args)
     finally:
         print("\nStopping all endpoints...")
         for eid in endpoint_ids:
@@ -1005,6 +1157,12 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="Delete existing index and reindex")
     p.set_defaults(func=cmd_index)
 
+    # index-vanilla
+    p = sub.add_parser("index-vanilla", help="Build vanilla RAG index: naive 256-token chunks")
+    p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
+    p.add_argument("--force", action="store_true", help="Delete existing index and reindex")
+    p.set_defaults(func=cmd_index_vanilla)
+
     # run
     p = sub.add_parser("run", help="Retrieve and generate answers for all questions")
     p.add_argument("--out-dir",     default="/tmp/grb", metavar="DIR")
@@ -1019,42 +1177,14 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-name",      default="contextual",
                    help="Output file prefix (default: contextual)")
     p.add_argument("--rerank",        action="store_true",
-                   help=f"Rerank top-{K_FETCH} candidates to top-{K} with {RERANK_MODEL}")
+                   help=f"Rerank top-{K_FETCH} candidates to top-{K}")
+    p.add_argument("--rerank-provider", default="local", choices=["local", "together", "cohere"],
+                   help=f"Reranker: local={RERANK_MODEL}, together={RERANK_MODEL_TOGETHER} (default: local)")
     p.add_argument("--enhanced",      action="store_true",
                    help=f"Use NER+cluster EnhancedSearch (SpacyMatcher/{SPACY_MODEL} + agglomerative clustering)")
+    p.add_argument("--vanilla",       action="store_true",
+                   help=f"Use vanilla RAG index ({VANILLA_CHUNK_TOKENS}-token chunks, k={VANILLA_K})")
     p.set_defaults(func=cmd_run)
-
-    # evalrun (generic)
-    p = sub.add_parser("evalrun", help="Evaluate generated answers with LLM judge")
-    p.add_argument("--out-dir",     default="/tmp/grb", metavar="DIR")
-    p.add_argument("--judge",       default="gpt-4o-mini",
-                   help="Judge model (default: gpt-4o-mini)")
-    p.add_argument("--limit",       type=int, default=None, metavar="N")
-    p.add_argument("--concurrency", type=int, default=20,
-                   help="Parallel judge workers (default: 20)")
-    p.add_argument("--run-name",    default="contextual",
-                   help="Results file prefix to evaluate (default: contextual)")
-    p.set_defaults(func=cmd_evalrun)
-
-    # eval — shortcut: GPT-4o-mini judge
-    p = sub.add_parser("eval", help="Evaluate with GPT-4o-mini judge")
-    p.add_argument("--out-dir",     default="/tmp/grb", metavar="DIR")
-    p.add_argument("--limit",       type=int, default=None, metavar="N")
-    p.add_argument("--concurrency", type=int, default=20,
-                   help="Parallel judge workers (default: 20)")
-    p.add_argument("--run-name",    default="contextual",
-                   help="Results file prefix to evaluate (default: contextual)")
-    p.set_defaults(func=cmd_evalrun, judge="gpt-4o-mini")
-
-    # final — shortcut: GPT-4.1 judge
-    p = sub.add_parser("final", help="Final evaluation with GPT-4.1 judge")
-    p.add_argument("--out-dir",     default="/tmp/grb", metavar="DIR")
-    p.add_argument("--limit",       type=int, default=None, metavar="N")
-    p.add_argument("--concurrency", type=int, default=20,
-                   help="Parallel judge workers (default: 20)")
-    p.add_argument("--run-name",    default="contextual",
-                   help="Results file prefix to evaluate (default: contextual)")
-    p.set_defaults(func=cmd_evalrun, judge="gpt-4.1")
 
     # use-endpoints — run benchmark against existing Together dedicated endpoints
     p = sub.add_parser("use-endpoints", help="Run benchmark using existing Together dedicated endpoints")
@@ -1085,10 +1215,24 @@ def _make_parser() -> argparse.ArgumentParser:
                    help="Workers per endpoint (default: 20, total = N * 20)")
     p.set_defaults(func=cmd_provision)
 
-    # report
-    p = sub.add_parser("report", help="Print comparison table vs published leaderboard")
+    # eval — score a run with benchmark's native answer_correctness metric
+    p = sub.add_parser("eval", help="Score a run with benchmark's native answer_correctness metric")
+    p.add_argument("--out-dir",     default="/tmp/grb", metavar="DIR")
+    p.add_argument("--run-name",    default="contextual",
+                   help="Results file prefix to evaluate (default: contextual)")
+    p.add_argument("--judge",          default="gpt-4o-mini",
+                   help="Judge model (default: gpt-4o-mini)")
+    p.add_argument("--judge-provider", default="openai", choices=["openai", "together"],
+                   help="API provider for judge (default: openai)")
+    p.add_argument("--limit",          type=int, default=None, metavar="N")
+    p.add_argument("--concurrency",    type=int, default=5,
+                   help="Parallel workers (default: 5)")
+    p.set_defaults(func=cmd_bench_eval)
+
+    # report — combined matrix of all eval runs + leaderboard
+    p = sub.add_parser("report", help="Combined matrix: our eval runs + leaderboard")
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
-    p.set_defaults(func=cmd_report)
+    p.set_defaults(func=cmd_bench_report)
 
     return ap
 

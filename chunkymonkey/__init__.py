@@ -6,7 +6,7 @@
 # permission from the copyright holder.
 
 """Chunky Monkey — a dairy-free RAG pipeline for delicious semantic similarity, clustering and NER."""
-from .chunking import chunk_document, extract_markdown_sections, is_list_line, is_table_line, merge_blocks
+from .chunking import chunk_document, extract_markdown_sections, is_list_line, is_table_line, merge_blocks, promote_plain_text_headers
 from .models import DocumentChunk, LoadedDocument, EntityAssociation, Entity, ClusterRecord, ScoredChunk
 from .ner import VocabularyMatcher, EntityMatch, EntityIndex, SpacyMatcher, SpacyLabel, ALL_SPACY_LABELS, merge_matches
 from .cluster import CooccurrenceMatrix, cluster_entities, ClusterMap
@@ -40,6 +40,7 @@ __all__ = [
     "is_list_line",
     "is_table_line",
     "merge_blocks",
+    "promote_plain_text_headers",
     "enrich_chunk",
     "enrich_chunks",
     "DocumentLoader",
