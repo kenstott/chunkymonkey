@@ -371,7 +371,12 @@ def _split_at_table_rows(text: str, max_size: int) -> list[str]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _lca_path(paths: list[list[str]]) -> list[str]:
-    """Lowest common ancestor of a list of heading paths."""
+    """Lowest common ancestor of a list of heading paths.
+
+    When sibling paths share no common ancestor (LCA would be empty), falls
+    back to the *last* non-empty path so every chunk retains at least the
+    section it ends in rather than losing all context.
+    """
     non_empty = [p for p in paths if p]
     if not non_empty:
         return []
@@ -383,7 +388,7 @@ def _lca_path(paths: list[list[str]]) -> list[str]:
             result.append(parts[0])
         else:
             break
-    return result
+    return result if result else list(non_empty[-1])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -574,6 +579,9 @@ def chunk_document(
                 chunks.append(_flush(current_chunk, chunk_index, chunk_start_offset))
                 chunk_index += 1
                 _reset()
+                # Clear the old-path seed so the new chunk's LCA starts
+                # fresh from the incoming heading, not from the prior section.
+                current_section_paths.clear()
 
             while heading_stack and heading_stack[-1][0] >= level:
                 heading_stack.pop()
