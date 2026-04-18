@@ -11,6 +11,7 @@ import pytest
 
 from chunkymonkey import (
     DocumentChunk,
+    NOVEL_STRUCTURAL_LEVELS,
     chunk_document,
     is_list_line,
     is_table_line,
@@ -442,3 +443,120 @@ class TestPromotePlainTextHeaders:
         text = "This is a normal sentence. Another normal sentence follows it."
         result = promote_plain_text_headers(text)
         assert "##" not in result
+
+
+# =============================================================================
+# promote_plain_text_headers — structural_levels
+# =============================================================================
+
+class TestStructuralLevels:
+    # ── CHAPTER promotion ─────────────────────────────────────────────────────
+
+    def test_chapter_with_title_promoted(self):
+        text = "CHAPTER I CANADIANS, OLD AND NEW The conquest of Canada was decisive."
+        result = promote_plain_text_headers(text, structural_levels=NOVEL_STRUCTURAL_LEVELS)
+        # Trailing punctuation stripped per word; comma on CANADIANS, is removed
+        assert "## CHAPTER I: CANADIANS OLD AND NEW" in result
+        assert "The conquest of Canada" in result
+
+    def test_chapter_no_title_promoted(self):
+        text = "CHAPTER I. Music, in however primitive a stage, is universal."
+        result = promote_plain_text_headers(text, structural_levels=NOVEL_STRUCTURAL_LEVELS)
+        assert "## CHAPTER I" in result
+        assert "Music, in however primitive" in result
+
+    def test_chapter_dotdash_separator(self):
+        text = "CHAPTER I.--AN OPTIMISTIC FORECAST. As the sun was setting."
+        result = promote_plain_text_headers(text, structural_levels=NOVEL_STRUCTURAL_LEVELS)
+        assert "## CHAPTER I: AN OPTIMISTIC FORECAST" in result
+
+    def test_chapter_lowercase(self):
+        text = "Chapter III THE LADDER OF LEARNING Once upon a time."
+        result = promote_plain_text_headers(text, structural_levels=NOVEL_STRUCTURAL_LEVELS)
+        assert "## Chapter III: THE LADDER OF LEARNING" in result
+
+    # ── PART promotion ────────────────────────────────────────────────────────
+
+    def test_part_promoted_as_h1(self):
+        text = "PART I AMERICA Their graves are scattered far and wide."
+        result = promote_plain_text_headers(text, structural_levels=NOVEL_STRUCTURAL_LEVELS)
+        assert "# PART I: AMERICA" in result
+        assert "## " not in result  # no chapter-level heading
+
+    def test_book_the_first_promoted(self):
+        text = "BOOK THE FIRST AN EPIGRAM ON THE AMOURS We who were five books."
+        result = promote_plain_text_headers(text, structural_levels=NOVEL_STRUCTURAL_LEVELS)
+        assert "# BOOK THE FIRST" in result
+
+    def test_lowercase_part_not_promoted(self):
+        # "part of the country" — should not be treated as structural
+        text = "He travelled to the part of the country well known for its hills."
+        result = promote_plain_text_headers(text, structural_levels=NOVEL_STRUCTURAL_LEVELS)
+        assert "#" not in result
+
+    # ── Hierarchy: PART > CHAPTER ─────────────────────────────────────────────
+
+    def test_part_h1_chapter_h2(self):
+        text = (
+            "PART I AMERICA Their graves are scattered. "
+            "CHAPTER I INGLIS OF KINGSMILLS It was evening."
+        )
+        result = promote_plain_text_headers(text, structural_levels=NOVEL_STRUCTURAL_LEVELS)
+        assert "# PART I" in result
+        assert "## CHAPTER I" in result
+        assert result.index("# PART I") < result.index("## CHAPTER I")
+
+    # ── TOC detection ─────────────────────────────────────────────────────────
+
+    def test_toc_cluster_skipped(self):
+        # Three CHAPTER markers within 300 chars → TOC cluster, all skipped.
+        # Body chapter is >300 chars away so it is NOT in the cluster.
+        toc = (
+            "CHAPTER I INGLIS OF KINGSMILLS 1 "
+            "CHAPTER II ELSIE MAUD INGLIS 17 "
+            "CHAPTER III THE LADDER OF LEARNING 27 "
+        )
+        body = "x " * 160  # ~320 chars of filler to exceed toc_proximity=300
+        chapter = "CHAPTER I INGLIS OF KINGSMILLS It was a cold winter morning."
+        text = toc + body + chapter
+        result = promote_plain_text_headers(text, structural_levels=NOVEL_STRUCTURAL_LEVELS)
+        # TOC entries skipped; body chapter promoted once
+        assert result.count("## CHAPTER") == 1
+
+    def test_toc_proximity_configurable(self):
+        # Two CHAPTER markers 400 chars apart — default 300 would NOT flag as TOC
+        filler = "x " * 150  # ~300 chars
+        text = f"CHAPTER I INTRO {filler}CHAPTER II BODY The real content starts here."
+        result = promote_plain_text_headers(text, structural_levels=NOVEL_STRUCTURAL_LEVELS)
+        assert result.count("## CHAPTER") == 2
+
+    # ── Custom structural_levels ──────────────────────────────────────────────
+
+    def test_custom_structural_levels(self):
+        custom = [(r"SECTION\s+\d+", 1), (r"(?i:ARTICLE)\s+\d+", 2)]
+        text = "SECTION 1 GENERAL PROVISIONS This section governs. ARTICLE 1 Definitions Terms are defined here."
+        result = promote_plain_text_headers(text, structural_levels=custom)
+        assert "# SECTION 1" in result
+        assert "## ARTICLE 1" in result
+
+    def test_structural_levels_none_disabled(self):
+        text = "CHAPTER I CANADIANS, OLD AND NEW The conquest was decisive."
+        result = promote_plain_text_headers(text, structural_levels=None,
+                                            promote_questions=False, promote_short_phrases=False)
+        assert "#" not in result
+
+    # ── chunk_document integration ────────────────────────────────────────────
+
+    def test_chunk_document_structural_levels(self):
+        text = (
+            "PART I AMERICA Their graves are scattered far and wide. "
+            "CHAPTER I INGLIS OF KINGSMILLS It was a cold winter morning in Inverness."
+        )
+        chunks = chunk_document(
+            "novel", text, min_chunk_size=10, max_chunk_size=500,
+            promote_headings=True, structural_levels=NOVEL_STRUCTURAL_LEVELS,
+            promote_questions=False, promote_short_phrases=False,
+        )
+        all_content = " ".join(c.content for c in chunks)
+        assert "PART I" in all_content
+        assert "CHAPTER I" in all_content

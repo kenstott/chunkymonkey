@@ -14,6 +14,17 @@ from .models import DocumentChunk
 
 # ── Plain-text header promotion ───────────────────────────────────────────────
 
+# Default structural-level patterns for prose corpora (novels, non-fiction).
+# Each tuple: (regex_pattern, heading_level) where level 1→# and level 2→##.
+# Pass as ``structural_levels`` to override completely.
+NOVEL_STRUCTURAL_LEVELS: list[tuple[str, int]] = [
+    # PART/BOOK/SCENE only when ALL-CAPS (no re.IGNORECASE) — avoids false
+    # positives from common words "part", "book", "scene" in running prose.
+    (r"(?:PART|BOOK|SCENE)\s+(?:[IVXLCDM]+|THE\s+[A-Z]+|\d+)", 1),
+    # CHAPTER is unambiguous regardless of case.
+    (r"(?i:CHAPTER)\s+(?:[IVXLCDM]+|\d+)", 2),
+]
+
 _VERB_RE = re.compile(
     r"\b(is|are|was|were|has|have|had|can|will|may|should|would|could|"
     r"do|does|did|been|be|being|occur|form|cause|help|provide|include|"
@@ -34,16 +45,63 @@ _SHORT_PHRASE_RE = re.compile(
 )
 
 
+def _extract_chapter_title(text: str, pos: int) -> tuple[str, int]:
+    """Extract ALL-CAPS title words from *text* starting at *pos*.
+
+    Skips separator chars (periods, dashes, spaces) then consumes words whose
+    alphabetic characters are all uppercase.  Stops at the first prose word
+    (has a lowercase letter) or a bare digit (page-number in a TOC entry).
+
+    Returns ``(title_string, end_pos)`` where *end_pos* is the start of prose.
+    """
+    while pos < len(text) and text[pos] in ". -\t\u2013\u2014":
+        pos += 1
+    words: list[str] = []
+    i = pos
+    while i < len(text):
+        while i < len(text) and text[i] == " ":
+            i += 1
+        j = i
+        while j < len(text) and text[j] not in " \t\n":
+            j += 1
+        word = text[i:j]
+        if not word:
+            break
+        alpha = [c for c in word if c.isalpha()]
+        if not alpha:
+            if word.isdigit():
+                break  # page number → TOC entry, stop
+            i = j
+            continue
+        if all(c.isupper() for c in alpha):
+            words.append(word.rstrip(".,;:"))
+            i = j
+        else:
+            break
+    return " ".join(words).strip().rstrip(".,;:\u2013\u2014-"), i
+
+
 def promote_plain_text_headers(
     text: str,
     promote_questions: bool = True,
     promote_short_phrases: bool = True,
     max_header_words: int = 6,
     max_header_chars: int = 80,
+    structural_levels: list[tuple[str, int]] | None = None,
+    toc_proximity: int = 300,
 ) -> str:
-    """Insert markdown ``##`` headers into flat plain text by detecting header-like patterns.
+    """Insert markdown headers into flat plain text by detecting header-like patterns.
 
-    Two heuristics (each independently togglable):
+    Three heuristics (each independently togglable):
+
+    * **Structural levels** (``structural_levels``): A list of
+      ``(regex_pattern, heading_level)`` pairs applied in a single pass.
+      Level 1 emits ``#``, level 2 emits ``##``, etc.  Each regex should match
+      the structural marker (e.g. ``CHAPTER I``); the function extracts any
+      following ALL-CAPS title words automatically.  TOC clusters (same-level
+      markers within *toc_proximity* chars of each other) are skipped.
+      Pass ``NOVEL_STRUCTURAL_LEVELS`` for the built-in PART/CHAPTER defaults,
+      or supply your own list.  ``None`` (default) disables this heuristic.
 
     * **Questions** (``promote_questions``): A standalone question sentence
       (ends with ``?``) that is *not* followed immediately by another question
@@ -57,18 +115,57 @@ def promote_plain_text_headers(
       Targets fused PDF headers such as "Signs and symptoms Basal cell …".
 
     Args:
-        text:                  Raw plain text (may be a single long string).
-        promote_questions:     Promote standalone question sentences.
+        text:                Raw plain text (may be a single long string).
+        promote_questions:   Promote standalone question sentences.
         promote_short_phrases: Promote short verbless phrases as headers.
-        max_header_words:      Phrase word-count ceiling (short-phrase heuristic).
-        max_header_chars:      Phrase char-length ceiling (short-phrase heuristic).
+        max_header_words:    Phrase word-count ceiling (short-phrase heuristic).
+        max_header_chars:    Phrase char-length ceiling (short-phrase heuristic).
+        structural_levels:   List of ``(pattern, level)`` pairs for structural
+                             promotion, or ``None`` to disable.  Use the exported
+                             ``NOVEL_STRUCTURAL_LEVELS`` constant as a starting
+                             point.
+        toc_proximity:       Max chars between same-level markers before they are
+                             treated as a TOC cluster and skipped (default 300).
 
     Returns:
-        Text with qualifying patterns replaced by ``\\n\\n## <header>\\n\\n<body>``.
+        Text with qualifying patterns replaced by heading blocks.
     """
     # Normalise whitespace but preserve paragraph breaks if present
     has_paras = "\n\n" in text
     text = re.sub(r"[ \t]+", " ", text).strip()
+
+    if structural_levels:
+        # Collect all matches across every (pattern, level) pair.
+        all_hits: list[tuple[int, int, str, int]] = []  # (pos, end, marker, level)
+        for pattern_str, level in structural_levels:
+            for m in re.compile(pattern_str).finditer(text):
+                all_hits.append((m.start(), m.end(), m.group(0), level))
+        all_hits.sort(key=lambda x: x[0])
+
+        # TOC detection: same-level markers within toc_proximity chars → skip.
+        toc_idx: set[int] = set()
+        by_level: dict[int, list[int]] = {}
+        for idx, (_, _, _, lvl) in enumerate(all_hits):
+            by_level.setdefault(lvl, []).append(idx)
+        for level_indices in by_level.values():
+            for k in range(len(level_indices) - 1):
+                ia, ib = level_indices[k], level_indices[k + 1]
+                if all_hits[ib][0] - all_hits[ia][0] < toc_proximity:
+                    toc_idx.add(ia)
+                    toc_idx.add(ib)
+
+        # Replace right-to-left so earlier positions stay valid.
+        for i in range(len(all_hits) - 1, -1, -1):
+            if i in toc_idx:
+                continue
+            pos, end, marker, level = all_hits[i]
+            hashes = "#" * level
+            title, prose_start = _extract_chapter_title(text, end)
+            heading = f"\n\n{hashes} {marker}"
+            if title:
+                heading += f": {title}"
+            heading += "\n\n"
+            text = text[:pos] + heading + text[prose_start:]
 
     if promote_questions:
         sentences = _SENT_END_RE.split(text)
@@ -305,6 +402,8 @@ def chunk_document(
     promote_short_phrases: bool = True,
     max_header_words: int = 6,
     max_header_chars: int = 80,
+    structural_levels: list[tuple[str, int]] | None = None,
+    toc_proximity: int = 300,
 ) -> list[DocumentChunk]:
     """Split a document into chunks bounded by min_chunk_size and max_chunk_size.
 
@@ -350,6 +449,9 @@ def chunk_document(
         promote_short_phrases: Passed to ``promote_plain_text_headers``.
         max_header_words: Passed to ``promote_plain_text_headers``.
         max_header_chars: Passed to ``promote_plain_text_headers``.
+        structural_levels: Passed to ``promote_plain_text_headers``.  Use
+            ``NOVEL_STRUCTURAL_LEVELS`` for PART/CHAPTER promotion.
+        toc_proximity: Passed to ``promote_plain_text_headers``.
     """
     hard_max = int(max_chunk_size * (1.0 + overflow_margin))
 
@@ -360,6 +462,8 @@ def chunk_document(
             promote_short_phrases=promote_short_phrases,
             max_header_words=max_header_words,
             max_header_chars=max_header_chars,
+            structural_levels=structural_levels,
+            toc_proximity=toc_proximity,
         )
 
     chunks: list[DocumentChunk] = []
