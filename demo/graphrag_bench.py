@@ -40,7 +40,9 @@ except ImportError:
     pass
 
 sys.path.insert(0, str(_PROJECT_ROOT))
-from chunkymonkey import DocumentLoader
+from chunkymonkey import DocumentLoader, NOVEL_STRUCTURAL_LEVELS
+from chunkymonkey import chunk_document, promote_plain_text_headers
+from chunkymonkey.context import enrich_chunks
 from chunkymonkey.storage._store import Store
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -307,16 +309,32 @@ def cmd_index(args: argparse.Namespace) -> None:
     corpus = _build_corpus(out_dir)
     print(f"Corpus: {len(corpus)} documents")
 
-    loader = DocumentLoader(
-        min_chunk_size=MIN_CHUNK,
-        max_chunk_size=MAX_CHUNK,
-        context_strategy="prefix",
-    )
-
-    print(f"Chunking with DocumentLoader (min={MIN_CHUNK}, max={MAX_CHUNK})...")
+    print(f"Chunking with header promotion (min={MIN_CHUNK}, max={MAX_CHUNK})...")
     all_chunks = []
     for doc_id, text in corpus:
-        chunks = loader.load_text(text, doc_id)
+        is_novel = doc_id.lower().startswith("novel")
+        if is_novel:
+            promoted = promote_plain_text_headers(
+                text,
+                promote_questions=False,
+                promote_short_phrases=False,
+                structural_levels=NOVEL_STRUCTURAL_LEVELS,
+                toc_proximity=300,
+            )
+        else:
+            promoted = promote_plain_text_headers(
+                text,
+                promote_questions=True,
+                promote_short_phrases=True,
+            )
+        chunks = chunk_document(
+            doc_id, promoted,
+            min_chunk_size=MIN_CHUNK,
+            max_chunk_size=MAX_CHUNK,
+            include_breadcrumb=True,
+            promote_headings=False,  # already promoted above
+        )
+        chunks = enrich_chunks(chunks, strategy="prefix")
         all_chunks.extend(chunks)
 
     print(f"Total chunks: {len(all_chunks):,}")
