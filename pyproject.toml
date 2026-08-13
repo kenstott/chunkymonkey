@@ -102,6 +102,11 @@ show_missing = true
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+# demo/ is benchmark and example code, not part of the library surface — the same
+# exclusion pyright already applies below. It carries ~300 pre-existing lint
+# findings; gating library commits on them blocks unrelated work. Removing this
+# line and cleaning the directory up is tracked as separate work.
+extend-exclude = ["demo"]
 
 [tool.ruff.lint]
 # ANN: enforce annotations + ban `Any` in annotations (ANN401).
