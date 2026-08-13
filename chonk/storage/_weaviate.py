@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ..models import DocumentChunk
 
+from . import _cascade
+
 logger = logging.getLogger(__name__)
 
 _MISSING_DEPS_MSG = (
@@ -631,23 +633,68 @@ class WeaviateVectorBackend:
     # Delete / clear
     # ------------------------------------------------------------------
 
-    def delete_by_document(self, document_name: str) -> int:
+    # ------------------------------------------------------------------
+    # Cascade helpers
+    # ------------------------------------------------------------------
+
+    def _run(self, sql: str, params: list[Any]) -> None:
+        self._catalog.execute(sql, params)
+
+    def _scalar(self, sql: str, params: list[Any]) -> Any:  # noqa: ANN401
+        rows = self._catalog.execute(sql, params).fetchall()
+        return rows[0][0] if rows else None
+
+    def _table_exists(self, name: str) -> bool:
+        rows = self._catalog.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+            [name],
+        ).fetchall()
+        return bool(rows and rows[0][0] > 0)
+
+    def chunk_ids_for_document(self, document_name: str) -> list[str]:
+        """Return every chunk_id currently stored for *document_name*."""
+        rows = self._catalog.execute(
+            "SELECT chunk_id FROM embeddings WHERE document_name = ?",
+            [document_name],
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def gc_orphaned_entities(self) -> int:
+        """Delete catalog entities nothing references any more."""
+        return _cascade.gc_orphaned_entities(self._run, self._scalar, self._table_exists)
+
+    def delete_by_document(self, document_name: str, *, gc_entities: bool = True) -> int:
+        """Delete a document from Weaviate and everything keyed to it in the catalog.
+
+        Cascades to ``chunk_entities``, ``chunk_clusters``, ``svo_triples``, and
+        the ``documents`` registry row. Leaving the registry row behind would make
+        the next :func:`~chonk.storage.sync_document` report "skipped" for a
+        document that is no longer indexed.
+        """
         from weaviate.classes.query import Filter
 
         rows = self._catalog.execute(
             "SELECT chunk_id FROM embeddings WHERE document_name = ?",
             [document_name],
         ).fetchall()
-        count = len(rows)
+        chunk_ids = [r[0] for r in rows]
+        count = len(chunk_ids)
 
         if count:
             self._col.data.delete_many(
                 where=Filter.by_property("document_name").equal(document_name)
             )
+            _cascade.delete_chunk_dependents(self._run, self._table_exists, chunk_ids)
             self._catalog.execute("DELETE FROM embeddings WHERE document_name = ?", [document_name])
-            chunk_ids = [r[0] for r in rows]
             phs = ", ".join("?" * len(chunk_ids))
             self._catalog.execute(f"DELETE FROM weaviate_ids WHERE chunk_id IN ({phs})", chunk_ids)
+
+        self._catalog.execute(
+            "DELETE FROM documents WHERE document_name = ?",
+            [document_name],
+        )
+        if count and gc_entities:
+            self.gc_orphaned_entities()
 
         return count
 

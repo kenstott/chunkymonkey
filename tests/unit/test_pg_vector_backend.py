@@ -249,18 +249,45 @@ class TestSearch:
 class TestDeleteAndClear:
     def test_delete_by_document_returns_count(self, backend):
         backend_obj, mock_conn, mock_cursor = backend
-        mock_cursor.fetchone.return_value = (5,)
+        # First fetchall: the chunk_ids being deleted. Later fetchall calls are
+        # cascade lookups; fetchone backs the orphan-entity COUNT(*).
+        mock_cursor.fetchall.return_value = [(f"c{i}",) for i in range(5)]
+        mock_cursor.fetchone.return_value = (0,)
 
         count = backend_obj.delete_by_document("doc_a")
 
         assert count == 5
-        delete_calls = [c for c in mock_cursor.execute.call_args_list if "DELETE" in c[0][0]]
-        assert len(delete_calls) == 1
-        assert "DELETE FROM" in delete_calls[0][0][0]
         mock_conn.commit.assert_called_once()
+
+    def test_delete_by_document_removes_registry_row(self, backend):
+        """Regression: defect #6 — a surviving documents row makes the next
+        sync_document report 'skipped' for a document that is no longer indexed."""
+        backend_obj, _conn, mock_cursor = backend
+        mock_cursor.fetchall.return_value = [("c0",)]
+        mock_cursor.fetchone.return_value = (0,)
+
+        backend_obj.delete_by_document("doc_a")
+
+        deletes = [c[0][0] for c in mock_cursor.execute.call_args_list if "DELETE" in c[0][0]]
+        assert any("chonk_embeddings" in sql for sql in deletes)
+        assert any("chonk_documents" in sql for sql in deletes)
+
+    def test_delete_by_document_cascades_to_chunk_keyed_tables(self, backend):
+        backend_obj, _conn, mock_cursor = backend
+        mock_cursor.fetchall.return_value = [("c0",)]
+        # Non-zero backs both the information_schema table_exists probes and the
+        # orphan-entity COUNT(*), so every cascade branch is exercised.
+        mock_cursor.fetchone.return_value = (1,)
+
+        backend_obj.delete_by_document("doc_a")
+
+        deletes = [c[0][0] for c in mock_cursor.execute.call_args_list if "DELETE" in c[0][0]]
+        for table in ("chunk_entities", "chunk_clusters", "svo_triples"):
+            assert any(f"DELETE FROM {table}" in sql for sql in deletes), table
 
     def test_delete_by_document_no_rows(self, backend):
         backend_obj, _conn, mock_cursor = backend
+        mock_cursor.fetchall.return_value = []
         mock_cursor.fetchone.return_value = (0,)
 
         count = backend_obj.delete_by_document("missing")

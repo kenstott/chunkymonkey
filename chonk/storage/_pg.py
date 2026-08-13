@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from ..graph._svo import SVOTriple
     from ..models import DocumentChunk
 
+from . import _cascade
+
 logger = logging.getLogger(__name__)
 
 _MISSING_DEPS_MSG = (
@@ -687,23 +689,79 @@ class PgVectorBackend:
     # Delete / clear
     # ------------------------------------------------------------------
 
-    def delete_by_document(self, document_name: str) -> int:
-        """Delete all chunks for a document. Returns count deleted."""
+    def _run(self, sql: str, params: list[Any]) -> None:
+        with self._pgconn.cursor() as cur:
+            cur.execute(sql, params)
+
+    def _scalar(self, sql: str, params: list[Any]) -> Any:  # noqa: ANN401
+        with self._pgconn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+        return row[0] if row else None
+
+    def _table_exists(self, name: str) -> bool:
+        return bool(
+            self._scalar(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = %s",
+                [name],
+            )
+        )
+
+    def chunk_ids_for_document(self, document_name: str) -> list[str]:
+        """Return every chunk_id currently stored for *document_name*."""
         self._ensure_connection()
-        t = self._table
         with self._pgconn.cursor() as cur:
             cur.execute(
-                f"SELECT COUNT(*) FROM {t} WHERE document_name = %s",
+                f"SELECT chunk_id FROM {self._table} WHERE document_name = %s",  # noqa: S608
                 [document_name],
             )
-            row = cur.fetchone()
-            count = row[0] if row else 0
-            cur.execute(
-                f"DELETE FROM {t} WHERE document_name = %s",
-                [document_name],
-            )
+            return [r[0] for r in cur.fetchall()]
+
+    def gc_orphaned_entities(self) -> int:
+        """Delete entities nothing references any more."""
+        self._ensure_connection()
+        deleted = _cascade.gc_orphaned_entities(self._run, self._scalar, self._table_exists)
         self._pgconn.commit()
-        return count
+        return deleted
+
+    def delete_by_document(self, document_name: str, *, gc_entities: bool = True) -> int:
+        """Delete all chunks for a document and everything keyed to them.
+
+        Cascades to ``chunk_entities``, ``chunk_clusters``, ``svo_triples``, and
+        the ``documents`` registry row. Leaving the registry row behind would make
+        the next :func:`~chonk.storage.sync_document` report "skipped" for a
+        document that is no longer indexed.
+
+        Returns:
+            Number of chunks deleted.
+        """
+        self._ensure_connection()
+        t = self._table
+        dt = self._docs_table
+        with self._pgconn.cursor() as cur:
+            cur.execute(
+                f"SELECT chunk_id FROM {t} WHERE document_name = %s",  # noqa: S608
+                [document_name],
+            )
+            chunk_ids = [r[0] for r in cur.fetchall()]
+
+        _cascade.delete_chunk_dependents(self._run, self._table_exists, chunk_ids, placeholder="%s")
+
+        with self._pgconn.cursor() as cur:
+            cur.execute(
+                f"DELETE FROM {t} WHERE document_name = %s",  # noqa: S608
+                [document_name],
+            )
+            cur.execute(
+                f"DELETE FROM {dt} WHERE document_name = %s",  # noqa: S608
+                [document_name],
+            )
+
+        if chunk_ids and gc_entities:
+            _cascade.gc_orphaned_entities(self._run, self._scalar, self._table_exists)
+
+        self._pgconn.commit()
+        return len(chunk_ids)
 
     def clear(self) -> None:
         """Delete all chunks from the table."""

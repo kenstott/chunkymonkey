@@ -217,24 +217,32 @@ class Store:
         key = ",".join(sorted(domain_ids))
         return hashlib.sha256(key.encode()).hexdigest()[:16]
 
-    def community_cache_valid(self, fingerprint: str, domain_ids: list[str]) -> bool:
-        """True if fingerprint exists in cache AND chunk_count matches current count."""
-        row = self.vector._conn.execute(
-            "SELECT chunk_count FROM community_cache WHERE fingerprint = ?",
-            [fingerprint],
-        ).fetchone()
-        if row is None:
-            return False
-        _count_row = self.vector._conn.execute(
-            "SELECT COUNT(*) FROM embeddings WHERE domain_id IN ({})".format(
+    def _domain_chunk_fingerprint(self, domain_ids: list[str]) -> str:
+        """Stable fingerprint of the chunk_ids currently in *domain_ids*.
+
+        Keyed on chunk identity rather than chunk count: an updated document
+        that happens to produce the same number of chunks still changes the
+        fingerprint, because chunk_id derives from content.
+        """
+        from ..graph._context_graph import _chunk_fingerprint
+
+        rows = self.vector._conn.execute(
+            "SELECT chunk_id FROM embeddings WHERE domain_id IN ({})".format(
                 ", ".join("?" * len(domain_ids))
             ),
             domain_ids,
+        ).fetchall()
+        return _chunk_fingerprint([r[0] for r in rows])
+
+    def community_cache_valid(self, fingerprint: str, domain_ids: list[str]) -> bool:
+        """True if *fingerprint* is cached AND its chunk set is unchanged."""
+        row = self.vector._conn.execute(
+            "SELECT chunk_fingerprint FROM community_cache WHERE fingerprint = ?",
+            [fingerprint],
         ).fetchone()
-        if _count_row is None:
-            raise RuntimeError("COUNT(*) returned no rows")
-        current_count = _count_row[0]
-        return row[0] == current_count
+        if row is None or row[0] is None:
+            return False
+        return bool(row[0] == self._domain_chunk_fingerprint(domain_ids))
 
     def write_community_cache(self, fingerprint: str, domain_ids: list[str]) -> None:
         """Record a community cache entry after building communities for domain_ids."""
@@ -251,14 +259,21 @@ class Store:
         chunk_count = _count_row[0]
         self.vector._conn.execute(
             """
-            INSERT INTO community_cache (fingerprint, domain_ids, chunk_count)
-            VALUES (?, ?, ?)
+            INSERT INTO community_cache
+                (fingerprint, domain_ids, chunk_count, chunk_fingerprint)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT (fingerprint) DO UPDATE SET
-                domain_ids  = excluded.domain_ids,
-                chunk_count = excluded.chunk_count,
-                created_at  = current_timestamp
+                domain_ids        = excluded.domain_ids,
+                chunk_count       = excluded.chunk_count,
+                chunk_fingerprint = excluded.chunk_fingerprint,
+                created_at        = now()
             """,
-            [fingerprint, _json.dumps(sorted(domain_ids)), chunk_count],
+            [
+                fingerprint,
+                _json.dumps(sorted(domain_ids)),
+                chunk_count,
+                self._domain_chunk_fingerprint(domain_ids),
+            ],
         ).fetchall()
 
     def invalidate_community_cache(self, domain_id: str) -> int:
@@ -856,8 +871,27 @@ class Store:
         self.vector._global_attached = False
 
     def delete_document(self, document_name: str) -> int:
-        """Delete all chunks for a document. Returns count deleted."""
-        return self.vector.delete_by_document(document_name)
+        """Delete all chunks for a document, cascading to derived rows.
+
+        Removes the document's ``chunk_entities``, ``chunk_clusters``, and
+        ``svo_triples`` rows, its ``documents`` registry entry, and any entity
+        left with no remaining reference. When a relational backend is attached,
+        its ``chunk_entities`` rows are cleaned too.
+
+        Returns:
+            Number of chunks deleted.
+        """
+        chunk_ids: list[str] = []
+        if self.relational is not None and isinstance(self.vector, DuckDBVectorBackend):
+            chunk_ids = self.vector.chunk_ids_for_document(document_name)
+
+        deleted = self.vector.delete_by_document(document_name)
+
+        if chunk_ids:
+            assert self.relational is not None  # guarded above
+            self.relational.delete_entities_by_document(chunk_ids)
+
+        return deleted
 
     # ── Entity descriptions ───────────────────────────────────────────────────
 

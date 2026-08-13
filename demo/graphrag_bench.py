@@ -500,7 +500,7 @@ def cmd_index(args: argparse.Namespace) -> None:
     import numpy as np
     from sentence_transformers import SentenceTransformer
 
-    from chonk.storage._vector import sync_document
+    from chonk.storage._vector import prune_documents, sync_document
 
     out_dir  = Path(args.out_dir)
     data_dir = out_dir / "data"
@@ -557,6 +557,7 @@ def cmd_index(args: argparse.Namespace) -> None:
 
         model = SentenceTransformer(EMBED_MODEL)
         n_skipped = n_added = n_updated = 0
+        present_doc_names = {doc_id for doc_id, _ in corpus}
 
         print(f"Chunking and indexing with header promotion (min={min_chunk}, max={max_chunk})...")
         all_chunks_for_schema: list = []
@@ -617,11 +618,18 @@ def cmd_index(args: argparse.Namespace) -> None:
             else:
                 n_added += 1
 
+        # Documents that vanished from the corpus since the last run.
+        removed = prune_documents(store.vector, present_doc_names)
+        n_deleted = len(removed)
+
         n = store.count()
 
     print(f"Index complete: {n:,} chunks → {db_path}")
-    if n_skipped or n_updated:
-        print(f"  skipped={n_skipped:,} (unchanged)  added={n_added:,}  updated={n_updated:,}")
+    if n_skipped or n_updated or n_deleted:
+        print(
+            f"  skipped={n_skipped:,} (unchanged)  added={n_added:,}  "
+            f"updated={n_updated:,}  deleted={n_deleted:,}"
+        )
 
     # Populate entity descriptions from DB schema chunks (source='schema').
     # Table/column comments extracted at crawl time — free, no LLM needed.

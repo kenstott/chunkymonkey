@@ -96,6 +96,18 @@ def _check_cache(
         "SELECT chunk_count FROM ner_cache WHERE config_fingerprint = ?", [fingerprint]
     ).fetchone()
 
+    # Phase 2 cascades every chunk-keyed delete, so a chunk_entities row for a
+    # chunk that no longer exists means a delete path was missed. Left unchecked
+    # it inflates processed_ids forever and, when a chunk_id is reused, marks
+    # changed content as already processed.
+    orphaned = processed_ids - all_chunk_ids
+    if orphaned:
+        raise RuntimeError(
+            f"chunk_entities references {len(orphaned)} chunk_id(s) absent from embeddings "
+            f"(e.g. {sorted(orphaned)[:3]}). The NER cache cannot be trusted — a delete "
+            f"path failed to cascade. Rebuild the index."
+        )
+
     config_match = cached is not None
     new_chunk_ids = all_chunk_ids - processed_ids
 

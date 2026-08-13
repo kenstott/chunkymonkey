@@ -1622,9 +1622,30 @@ filters work identically to the DuckDB backend.
 
 ### Document registry and incremental sync
 
-`DuckDBVectorBackend` maintains a `documents` table that tracks a content
-fingerprint for every indexed document.  Use it to avoid re-downloading and
-re-embedding content that hasn't changed.
+Every backend maintains a `documents` table that tracks a content fingerprint
+for every indexed document.  Use it to avoid re-downloading and re-embedding
+content that hasn't changed.
+
+A complete incremental run has three parts — add, update, and **delete**:
+
+```python
+from chonk.storage import prune_documents, sync_document
+
+present = set()
+for doc_id, raw in crawl_source():
+    present.add(doc_id)
+    result = sync_document(backend, doc_id, raw)
+    if result.action != "skipped":
+        chunks = loader.load_bytes(raw, name=doc_id)
+        backend.add_chunks(chunks, embed(chunks))
+        backend.register_document(doc_id, result.content_hash, chunk_count=len(chunks))
+
+removed = prune_documents(backend, present)   # documents deleted at the source
+```
+
+Skipping the `prune_documents()` step leaves documents that were deleted at the
+source indexed and searchable forever — `sync_document()` only ever sees
+documents that still exist.
 
 #### `sync_document()`
 
@@ -1642,6 +1663,7 @@ previous_chunk_count)`.
 | `"skipped"` | Stored hash matches; index is current. Nothing was changed. |
 | `"added"` | Document not previously indexed. |
 | `"updated"` | Document changed; all old chunks have been deleted. |
+| `"deleted"` | Returned by `prune_documents()` only — the document is gone from the source and has been removed. |
 
 On `"added"` or `"updated"` the caller re-embeds and calls
 `register_document()` to complete the update.  `result.content_hash` carries
@@ -1684,20 +1706,47 @@ if result.action != "skipped":
     # ...
 ```
 
-#### Detecting deleted documents
-
-`list_documents()` returns every registered document.  Compare against your
-source list to find documents that should be removed:
+#### Removing deleted documents — `prune_documents()`
 
 ```python
-known = {"nvd-feed", "attack-enterprise", "cwe"}
-for doc in backend.list_documents():
-    if doc["document_name"] not in known:
-        backend.delete_by_document(doc["document_name"])
+from chonk.storage import prune_documents
+
+removed = prune_documents(backend, present, dry_run=False)
 ```
 
-`delete_by_document()` removes both the chunks and the registry entry.
-`store.vector.clear()` removes everything — chunks and registry. (`Store` does not wrap `clear()` on the facade; call it on `store.vector` directly.)
+`present` must be **every** document name the source currently holds — a
+partial set deletes live data.  Each removed document comes back as a
+`SyncResult` with `action="deleted"` and `previous_chunk_count` set, ordered by
+name.  `dry_run=True` reports the same list without touching the index.
+
+Passing an empty `present` while documents are registered raises `ValueError`:
+an empty source enumeration is far more often a failed crawl than an intent to
+wipe the index.  Call `backend.clear()` to do that deliberately.
+
+#### What a delete removes
+
+`delete_by_document()` and `prune_documents()` cascade.  Both remove the
+document's chunks, its `documents` registry row, and every row keyed to those
+chunks — `chunk_entities`, `chunk_clusters`, `svo_triples` — then garbage-collect
+entities left with no remaining reference, along with their `entity_aliases` and
+`context_graph_edges`.  Entities still referenced by another document survive.
+
+Deleting without that cascade is what lets stale entities rebind to new content
+when a document is updated, so the cascade is part of the contract every backend
+implements, not a DuckDB-only detail.
+
+`store.vector.clear()` removes everything — chunks, registry, and all derived
+rows.  Namespace, domain, and source registries survive: they describe where
+content comes from, not the content itself.  (`Store` does not wrap `clear()` on
+the facade; call it on `store.vector` directly.)
+
+#### Index schema version
+
+Indexes are stamped with `chonk.storage.SCHEMA_VERSION`.  Opening an index
+written by an incompatible version raises `SchemaVersionError` — chunk IDs and
+cache keys are derived values with no in-place migration, so a stale index must
+be rebuilt from source.  Verification runs before any DDL, so a rejected index
+is left untouched.
 
 ### `Store.add_document()` parameters
 
