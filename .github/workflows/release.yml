@@ -1,0 +1,77 @@
+name: Release
+
+# Publishes chonk to PyPI when a v* tag is pushed.
+#
+# Authentication uses PyPI Trusted Publishing (OIDC) — no API token is stored in
+# this repository. One-time setup on PyPI: Manage project → Publishing → add a
+# GitHub publisher with owner `kenstott`, repository `chonk`, workflow
+# `release.yml`, and environment `pypi`. Until that publisher exists the publish
+# step fails with an OIDC error; nothing else in the job touches PyPI.
+#
+# The tag must match the version in pyproject.toml — the job fails loudly rather
+# than publishing a version nobody asked for.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and check only; do not publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Verify tag matches pyproject version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(uv run python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          if [ "$tag" != "$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match pyproject version $version" >&2
+            exit 1
+          fi
+
+      - name: Sync environment
+        run: uv sync --all-extras --group dev
+
+      - name: Run tests
+        run: uv run pytest tests/unit -q
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Check metadata
+        run: uvx twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

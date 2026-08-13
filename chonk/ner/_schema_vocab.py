@@ -365,7 +365,7 @@ class SchemaVocabBuilder:
         connection: Any,  # noqa: ANN401
         queries: dict[str, str] | list[str] | list[tuple[str, str]],
         entity_type: str = "term",
-        row_limit: int = 10_000,
+        row_limit: int | None = None,
     ) -> SchemaVocabBuilder:
         """Execute SQL queries and add result values as data-value vocab.
 
@@ -384,7 +384,9 @@ class SchemaVocabBuilder:
                 - ``list[str]`` — SQL strings; all use ``entity_type`` arg
                 - ``list[tuple[str, str]]`` — ``[(sql, entity_type), ...]``
             entity_type: Default entity type when ``queries`` is a list of strings.
-            row_limit: Maximum rows fetched per query (default 10 000).
+            row_limit: Maximum rows fetched per query. ``None`` (the default) fetches
+                every row. A vocabulary is a set, so a partial one silently weakens
+                matching rather than failing — cap only when the caller means to.
 
         Returns:
             ``self`` for chaining.
@@ -400,9 +402,11 @@ class SchemaVocabBuilder:
         conn = _resolve_connection(connection)
         try:
             for sql, etype in pairs:
-                limited = f"SELECT * FROM ({sql}) _q LIMIT {row_limit}"
+                wrapped = f"SELECT * FROM ({sql}) _q"
+                if row_limit is not None:
+                    wrapped += f" LIMIT {row_limit}"
                 # _execute validates single column, drops nulls, deduplicates
-                values = _execute(conn, limited)
+                values = _execute(conn, wrapped)
                 for val in values:
                     if len(val) >= self._min:
                         self._data_terms.append((val, etype))
