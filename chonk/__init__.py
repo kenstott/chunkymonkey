@@ -72,6 +72,7 @@ from .storage import (
     Store,
     SyncResult,
     VectorBackend,
+    prune_documents,
     sync_document,
 )
 from .transports import (
@@ -210,4 +211,5 @@ __all__ = [
     "PgVectorBackend",
     "SyncResult",
     "sync_document",
+    "prune_documents",
 ]

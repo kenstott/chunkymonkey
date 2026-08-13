@@ -57,7 +57,22 @@ class VectorBackend(Protocol):
         chunk_count: int = 0,
     ) -> None: ...
 
-    def delete_by_document(self, document_name: str) -> int: ...
+    def delete_by_document(self, document_name: str, *, gc_entities: bool = True) -> int:
+        """Delete a document's chunks, its registry row, and every derived row.
+
+        Implementations must remove the ``documents`` registry row along with
+        the chunks. A surviving registry row makes the next
+        :func:`~chonk.storage.sync_document` report "skipped" for a document
+        that is no longer indexed — silent, permanent data loss.
+
+        ``gc_entities=False`` defers the orphaned-entity sweep so batch callers
+        can run it once at the end.
+        """
+        ...
+
+    def gc_orphaned_entities(self) -> int: ...
+
+    def chunk_ids_for_document(self, document_name: str) -> list[str]: ...
 
     def clear(self) -> None: ...
 

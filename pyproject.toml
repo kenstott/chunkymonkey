@@ -1,6 +1,6 @@
 [project]
 name = "chonk"
-version = "0.1.0"
+version = "0.2.0"
 description = "A dairy-free RAG pipeline for delicious semantic similarity, clustering and NER."
 requires-python = ">=3.11,<3.15"
 dependencies = [

@@ -7,6 +7,29 @@
 
 """DDL for chonk's minimal storage schema."""
 
+# Bump whenever a change invalidates the contents of an existing index — a new
+# chunk_id derivation, a cache key change, or any column whose meaning shifts.
+# Indexes stamped with a different version are rejected on open; there is no
+# in-place migration because chunk_id is a foreign key in chunk_entities,
+# chunk_clusters, and context_graph_edges.
+#
+# 2 — chunk_id hashes the full chunk content (was: first 100 characters only).
+# 3 — community_cache validity keys off a chunk-id fingerprint (was: chunk count).
+SCHEMA_VERSION = 3
+
+
+class SchemaVersionError(RuntimeError):
+    """Raised when an index was written by an incompatible chonk schema version."""
+
+
+SCHEMA_META_DDL = """
+CREATE TABLE IF NOT EXISTS schema_meta (
+    id         INTEGER PRIMARY KEY,
+    version    INTEGER NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+""".strip()
+
 EMBEDDINGS_DDL = """
 CREATE TABLE IF NOT EXISTS embeddings (
     chunk_id     TEXT PRIMARY KEY,
@@ -54,6 +77,10 @@ CREATE TABLE IF NOT EXISTS community_cache (
     chunk_count   INTEGER,
     created_at    TIMESTAMP DEFAULT current_timestamp
 )
+""".strip()
+
+COMMUNITY_CACHE_MIGRATE_CHUNK_FINGERPRINT = """
+ALTER TABLE community_cache ADD COLUMN IF NOT EXISTS chunk_fingerprint VARCHAR
 """.strip()
 
 NAMESPACES_DDL = """
@@ -203,6 +230,7 @@ FTS_DDL = "PRAGMA create_fts_index('embeddings', 'chunk_id', 'content', overwrit
 
 def get_ddl(embedding_dim: int = 1024) -> list[str]:
     return [
+        SCHEMA_META_DDL,
         EMBEDDINGS_DDL.format(dim=embedding_dim),
         EMBEDDINGS_MIGRATE_BREADCRUMB,
         EMBEDDINGS_MIGRATE_NAMESPACE,
@@ -211,6 +239,7 @@ def get_ddl(embedding_dim: int = 1024) -> list[str]:
         EMBEDDINGS_MIGRATE_DOMAIN_ID,
         EMBEDDINGS_MIGRATE_SESSION_FINGERPRINT,
         COMMUNITY_CACHE_DDL,
+        COMMUNITY_CACHE_MIGRATE_CHUNK_FINGERPRINT,
         NAMESPACES_DDL,
         DOMAINS_DDL,
         DOMAINS_MIGRATE_PARENT_ID,

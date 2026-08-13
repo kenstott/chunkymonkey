@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -38,18 +39,22 @@ try:
 except ImportError:
     _np = None  # type: ignore
 
+from . import _cascade
+from ._protocol import VectorBackend
+
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class SyncResult:
-    """Result of a sync_document() call.
+    """Result of a sync_document() or prune_documents() call.
 
     Attributes:
-        action:               "added" | "updated" | "skipped"
+        action:               "added" | "updated" | "skipped" | "deleted"
         document_name:        Name of the document.
         content_hash:         SHA-256 hex of the raw bytes that were checked.
-        chunk_count:          Chunks in the new version (0 if skipped).
+                              Empty for "deleted" — nothing was hashed.
+        chunk_count:          Chunks in the new version (0 if skipped or deleted).
         previous_chunk_count: Chunks in the old version (0 if new/skipped).
     """
 
@@ -132,7 +137,13 @@ class DuckDBVectorBackend:
         from ._schema import VSS_INDEX_DDL, get_ddl
 
         if getattr(self._db, "_read_only", False):
+            # Read-only indexes cannot be stamped, but a version mismatch is still
+            # fatal — the chunk_ids and cache keys inside would be misread.
+            self._verify_schema_version()
             return
+
+        # Verify before any DDL runs so an incompatible index is left untouched.
+        self._verify_schema_version()
 
         # Load extensions — INSTALL may fail when already installed or on read-only
         # filesystems; attempt LOAD regardless. If LOAD fails, vss/fts is unavailable
@@ -152,6 +163,8 @@ class DuckDBVectorBackend:
             # All DDL uses IF NOT EXISTS — failure is not idempotent; re-raise.
             self._conn.execute(ddl).fetchall()
 
+        self._stamp_schema_version()
+
         # Always drop and recreate HNSW index to ensure cosine metric.
         # In file-backed databases, HNSW requires hnsw_enable_experimental_persistence;
         # log at WARNING (not silent) but do not raise — vector search falls back to
@@ -168,13 +181,77 @@ class DuckDBVectorBackend:
             )
 
     # ------------------------------------------------------------------
+    # Schema version
+    # ------------------------------------------------------------------
+
+    def _table_exists(self, name: str) -> bool:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+            [name],
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("COUNT(*) returned no rows")
+        return row[0] > 0
+
+    def _stored_schema_version(self) -> int | None:
+        """Version stamped on this index, or None if never stamped."""
+        if not self._table_exists("schema_meta"):
+            return None
+        row = self._conn.execute("SELECT version FROM schema_meta WHERE id = 1").fetchone()
+        return row[0] if row else None
+
+    def _verify_schema_version(self) -> None:
+        """Raise if this index was written by an incompatible schema version.
+
+        An unstamped index is accepted only when it holds no chunks — that is a
+        freshly created database, not a stale one.
+        """
+        from ._schema import SCHEMA_VERSION, SchemaVersionError
+
+        stored = self._stored_schema_version()
+        if stored == SCHEMA_VERSION:
+            return
+
+        if stored is None:
+            if not self._table_exists("embeddings"):
+                return
+            row = self._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()
+            if row is None:
+                raise RuntimeError("COUNT(*) returned no rows")
+            if row[0] == 0:
+                return
+
+        found = "unstamped (pre-2)" if stored is None else str(stored)
+        raise SchemaVersionError(
+            f"Index schema version {found} is incompatible with this build of chonk "
+            f"(expects version {SCHEMA_VERSION}). Chunk IDs and cache keys changed, and "
+            f"no in-place migration is possible. Rebuild the index from source "
+            f"(delete the database file, or re-run indexing with --force)."
+        )
+
+    def _stamp_schema_version(self) -> None:
+        from ._schema import SCHEMA_VERSION
+
+        self._conn.execute(
+            """
+            INSERT INTO schema_meta (id, version, updated_at) VALUES (1, ?, now())
+            ON CONFLICT (id) DO UPDATE SET version = excluded.version,
+                                           updated_at = excluded.updated_at
+            """,
+            [SCHEMA_VERSION],
+        ).fetchall()
+
+    # ------------------------------------------------------------------
     # Chunk ID
     # ------------------------------------------------------------------
 
     @staticmethod
     def _generate_chunk_id(document_name: str, chunk_index: int, content: str) -> str:
+        # Hashes the FULL content: a truncated hash collides for chunks that share
+        # a prefix, which silently rebinds stale entity/cluster rows to new content
+        # across an incremental update.
         content_hash = hashlib.sha256(
-            f"{document_name}:{chunk_index}:{content[:100]}".encode()
+            f"{document_name}:{chunk_index}:{content}".encode()
         ).hexdigest()[:16]
         return f"{document_name}_{chunk_index}_{content_hash}"
 
@@ -625,15 +702,49 @@ class DuckDBVectorBackend:
     # Delete / clear
     # ------------------------------------------------------------------
 
-    def delete_by_document(self, document_name: str) -> int:
-        """Delete all chunks for a document. Returns the number deleted."""
-        _count_row = self._conn.execute(
-            "SELECT COUNT(*) FROM embeddings WHERE document_name = ?",
-            [document_name],
-        ).fetchone()
-        if _count_row is None:
-            raise RuntimeError("COUNT(*) returned no rows")
-        count_before = _count_row[0]
+    def _run(self, sql: str, params: list[Any]) -> None:
+        self._conn.execute(sql, params).fetchall()
+
+    def _scalar(self, sql: str, params: list[Any]) -> Any:  # noqa: ANN401
+        rows = self._conn.execute(sql, params).fetchall()
+        return rows[0][0] if rows else None
+
+    def chunk_ids_for_document(self, document_name: str) -> list[str]:
+        """Return every chunk_id currently stored for *document_name*."""
+        return [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT chunk_id FROM embeddings WHERE document_name = ?",
+                [document_name],
+            ).fetchall()
+        ]
+
+    def delete_chunk_dependents(self, chunk_ids: list[str]) -> None:
+        """Delete every chunk-keyed row referencing *chunk_ids*."""
+        _cascade.delete_chunk_dependents(self._run, self._table_exists, chunk_ids)
+
+    def gc_orphaned_entities(self) -> int:
+        """Delete entities no chunk or triple references, and their dependents."""
+        return _cascade.gc_orphaned_entities(self._run, self._scalar, self._table_exists)
+
+    def delete_by_document(self, document_name: str, *, gc_entities: bool = True) -> int:
+        """Delete all chunks for a document and everything keyed to them.
+
+        Cascades to ``chunk_entities``, ``chunk_clusters``, ``svo_triples``, and
+        the ``documents`` registry row, then garbage-collects entities left with
+        no references.
+
+        Args:
+            gc_entities: Set False to skip the entity sweep — callers deleting
+                many documents in a batch should run :meth:`gc_orphaned_entities`
+                once at the end instead.
+
+        Returns:
+            Number of chunks deleted.
+        """
+        chunk_ids = self.chunk_ids_for_document(document_name)
+        self.delete_chunk_dependents(chunk_ids)
+
         self._conn.execute(
             "DELETE FROM embeddings WHERE document_name = ?",
             [document_name],
@@ -642,13 +753,29 @@ class DuckDBVectorBackend:
             "DELETE FROM documents WHERE document_name = ?",
             [document_name],
         ).fetchall()
+
+        if gc_entities and chunk_ids:
+            self.gc_orphaned_entities()
+
         self._fts_dirty = True
-        return count_before
+        return len(chunk_ids)
 
     def clear(self) -> None:
-        """Delete all chunks from the embeddings table."""
+        """Delete all chunks and everything derived from them.
+
+        Leaves the namespace/domain/source registries intact — those describe
+        where content comes from, not the content itself.
+        """
         self._conn.execute("DELETE FROM embeddings").fetchall()
         self._conn.execute("DELETE FROM documents").fetchall()
+        for table in (
+            *_cascade.CHUNK_KEYED_TABLES,
+            "entities",
+            "entity_aliases",
+            "context_graph_edges",
+        ):
+            if self._table_exists(table):
+                self._conn.execute(f"DELETE FROM {table}").fetchall()  # noqa: S608
         self._fts_dirty = True
 
     # ------------------------------------------------------------------
@@ -711,7 +838,7 @@ class DuckDBVectorBackend:
 
 
 def sync_document(
-    backend: DuckDBVectorBackend,
+    backend: VectorBackend,
     document_name: str,
     raw: bytes | None = None,
     *,
@@ -773,3 +900,72 @@ def sync_document(
         content_hash=content_hash,
         previous_chunk_count=prev_count,
     )
+
+
+def prune_documents(
+    backend: VectorBackend,
+    present: Iterable[str],
+    *,
+    dry_run: bool = False,
+) -> list[SyncResult]:
+    """Delete every registered document that is absent from *present*.
+
+    This is the deletion half of an incremental sync.  :func:`sync_document`
+    only ever sees documents the source still has, so a document removed at the
+    source stays indexed and searchable forever unless this is called::
+
+        present = set()
+        for doc_id, raw in crawl_source():
+            present.add(doc_id)
+            result = sync_document(backend, doc_id, raw)
+            ...
+        removed = prune_documents(backend, present)
+
+    Args:
+        backend: The vector backend to prune.
+        present: **Every** document name the source currently holds.  A partial
+            set deletes live data, so this must be the complete enumeration —
+            not a page, a filtered view, or the results of a failed crawl.
+        dry_run: Report what would be deleted without touching the index.
+
+    Returns:
+        One :class:`SyncResult` per removed document with ``action="deleted"``
+        and ``previous_chunk_count`` set, ordered by document name.
+
+    Raises:
+        ValueError: If *present* is empty while the registry is not.  An empty
+            source enumeration is far more often a failed crawl than an intent
+            to wipe the index; call :meth:`~DuckDBVectorBackend.clear` to do
+            that deliberately.
+    """
+    registered = [doc["document_name"] for doc in backend.list_documents()]
+    present_set = set(present)
+
+    if not present_set and registered:
+        raise ValueError(
+            f"prune_documents() received an empty 'present' set while {len(registered)} "
+            f"documents are registered — this would delete the entire index. If that is "
+            f"intended, call backend.clear() instead."
+        )
+
+    stale = sorted(name for name in registered if name not in present_set)
+
+    results: list[SyncResult] = []
+    for name in stale:
+        if dry_run:
+            prev_count = len(backend.chunk_ids_for_document(name))
+        else:
+            # Entity GC is deferred to a single sweep after the batch.
+            prev_count = backend.delete_by_document(name, gc_entities=False)
+        results.append(
+            SyncResult(
+                action="deleted",
+                document_name=name,
+                previous_chunk_count=prev_count,
+            )
+        )
+
+    if results and not dry_run:
+        backend.gc_orphaned_entities()
+
+    return results
