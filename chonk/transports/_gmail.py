@@ -15,7 +15,7 @@ browser opens for the consent flow and the token is saved to ``token_path``
 for all subsequent runs.
 
 Requires: ``google-api-python-client``, ``google-auth-oauthlib``
-    pip install chonk[gmail]
+    pip install chonk-rag[gmail]
 
 Usage::
 

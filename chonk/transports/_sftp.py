@@ -32,7 +32,7 @@ class SftpTransport:
 
     def fetch(self, uri: str, options: FetchOptions | None = None) -> FetchResult:
         if not _PARAMIKO_AVAILABLE:
-            raise ImportError("pip install chonk[sftp]")
+            raise ImportError("pip install chonk-rag[sftp]")
 
         parsed = urlparse(uri)
         host = parsed.hostname

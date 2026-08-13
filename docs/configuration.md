@@ -1137,7 +1137,7 @@ store = Store("my.duckdb", read_only=True)           # concurrent readers
 Requires a running PostgreSQL instance with `pgvector` installed. Supports hybrid BM25 + ANN search.
 
 ```bash
-pip install "chonk[pgvector]"
+pip install "chonk-rag[pgvector]"
 ```
 
 ```python
@@ -1151,7 +1151,7 @@ The `pgvector` extension is created automatically on first connect if the connec
 Vectors stored in a Qdrant collection; chunk metadata stored in a DuckDB sidecar file. Suited for large-scale or multi-process deployments.
 
 ```bash
-pip install "chonk[qdrant]"
+pip install "chonk-rag[qdrant]"
 # Start Qdrant (Docker):
 docker run -p 6333:6333 qdrant/qdrant
 ```
@@ -1197,7 +1197,7 @@ store.vector.compact()   # remove orphaned Qdrant points
 Vectors and chunk payload stored in a Pinecone serverless index; catalog metadata stored in a DuckDB sidecar file. Suited for fully managed, serverless vector search at any scale.
 
 ```bash
-pip install "chonk[pinecone]"
+pip install "chonk-rag[pinecone]"
 ```
 
 ```python
@@ -1235,7 +1235,7 @@ store.vector.compact()   # remove orphaned Pinecone vectors
 Vectors and chunk payload stored in Weaviate Cloud; catalog metadata stored in a DuckDB sidecar file. Supports native BM25 and ANN search inside Weaviate, merged via Reciprocal Rank Fusion.
 
 ```bash
-pip install "chonk[weaviate]"
+pip install "chonk-rag[weaviate]"
 ```
 
 ```python

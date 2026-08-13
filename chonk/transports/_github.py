@@ -157,7 +157,7 @@ class GitHubCrawler:
             import requests as _requests
         except ImportError as exc:
             raise ImportError(
-                "pip install chonk[http]  # requests required for GitHubCrawler"
+                "pip install chonk-rag[http]  # requests required for GitHubCrawler"
             ) from exc  # noqa: E501
 
         session = self._make_session(_requests)
@@ -234,7 +234,7 @@ class GitHubCrawler:
             import requests as _requests
         except ImportError as exc:
             raise ImportError(
-                "pip install chonk[http]  # requests required for GitHubCrawler"
+                "pip install chonk-rag[http]  # requests required for GitHubCrawler"
             ) from exc  # noqa: E501
 
         owner, repo = _parse_repo_url(uri)

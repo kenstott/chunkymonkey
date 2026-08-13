@@ -140,30 +140,33 @@ The original `content` field is never modified. `embedding_content` is what you 
 
 ## Installation
 
+The distribution is named **chonk-rag** on PyPI (`chonk` was already taken); the
+import name is still `chonk`.
+
 Core (no optional dependencies):
 ```bash
-pip install chonk
+pip install chonk-rag
 ```
 
 With specific extras:
 ```bash
-pip install "chonk[http]"       # HTTP/HTTPS transport
-pip install "chonk[s3]"         # Amazon S3 transport
-pip install "chonk[sftp]"       # SFTP transport
-pip install "chonk[pdf]"        # PDF extraction
-pip install "chonk[docx]"       # DOCX extraction
-pip install "chonk[xlsx]"       # XLSX extraction
-pip install "chonk[pptx]"       # PPTX extraction
-pip install "chonk[yaml]"       # YAML file extraction
-pip install "chonk[odf]"        # ODF/ODS/ODT extraction
-pip install "chonk[storage]"    # DuckDB vector store
-pip install "chonk[pgvector]"  # PostgreSQL + pgvector vector store
-pip install "chonk[cluster]"    # Entity clustering (scikit-learn)
-pip install "chonk[leiden]"     # Leiden community detection (igraph + leidenalg)
-pip install "chonk[parquet]"    # Parquet/Arrow/Feather structured file support
-pip install "chonk[code]"       # Python/TS/JS/Java code chunking (stdlib only, no extra packages)
-pip install "chonk[gmail]"      # Gmail transport (google-api-python-client, google-auth-oauthlib)
-pip install "chonk[full]"       # Everything
+pip install "chonk-rag[http]"       # HTTP/HTTPS transport
+pip install "chonk-rag[s3]"         # Amazon S3 transport
+pip install "chonk-rag[sftp]"       # SFTP transport
+pip install "chonk-rag[pdf]"        # PDF extraction
+pip install "chonk-rag[docx]"       # DOCX extraction
+pip install "chonk-rag[xlsx]"       # XLSX extraction
+pip install "chonk-rag[pptx]"       # PPTX extraction
+pip install "chonk-rag[yaml]"       # YAML file extraction
+pip install "chonk-rag[odf]"        # ODF/ODS/ODT extraction
+pip install "chonk-rag[storage]"    # DuckDB vector store
+pip install "chonk-rag[pgvector]"  # PostgreSQL + pgvector vector store
+pip install "chonk-rag[cluster]"    # Entity clustering (scikit-learn)
+pip install "chonk-rag[leiden]"     # Leiden community detection (igraph + leidenalg)
+pip install "chonk-rag[parquet]"    # Parquet/Arrow/Feather structured file support
+pip install "chonk-rag[code]"       # Python/TS/JS/Java code chunking (stdlib only, no extra packages)
+pip install "chonk-rag[gmail]"      # Gmail transport (google-api-python-client, google-auth-oauthlib)
+pip install "chonk-rag[full]"       # Everything
 ```
 
 ---
@@ -1566,7 +1569,7 @@ return identical `(chunk_id, score, DocumentChunk)` results.
 
 ### DuckDB (default)
 
-Requires `pip install "chonk[storage]"`. Stores everything in a single local file.
+Requires `pip install "chonk-rag[storage]"`. Stores everything in a single local file.
 Uses DuckDB VSS (HNSW cosine index) for vector search and DuckDB FTS (BM25) for
 hybrid reranking.
 
@@ -1591,7 +1594,7 @@ with Store("index.duckdb", embedding_dim=1024) as store:
 
 ### PostgreSQL + pgvector
 
-Requires `pip install "chonk[pgvector]"`. Stores chunks in a PostgreSQL table with
+Requires `pip install "chonk-rag[pgvector]"`. Stores chunks in a PostgreSQL table with
 a `vector(dim)` column. Uses pgvector's HNSW cosine index for ANN search. The right
 choice when your team is already running PostgreSQL and wants the vector index in the
 same managed database as the rest of your data.
@@ -2154,7 +2157,7 @@ evidence assembly; the planner receives ranked `DocumentChunk` results annotated
 their source domain.
 
 ```bash
-pip install "chonk[storage]" mcp
+pip install "chonk-rag[storage]" mcp
 ```
 
 ### Transports
@@ -2287,7 +2290,7 @@ For the full reference — index feature flags (`build-ner`, `build-svo`, `build
 
 ```bash
 # S3-compatible storage (Cloudflare R2 used in this project)
-pip install "chonk[s3]"   # boto3
+pip install "chonk-rag[s3]"   # boto3
 
 # rclone — sync large result files (checkpoints, run DBs, embeddings) to/from R2
 brew install rclone

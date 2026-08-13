@@ -9,7 +9,7 @@
 
 Requires the ``spacy`` optional dependency group::
 
-    pip install chonk[spacy]
+    pip install chonk-rag[spacy]
 
 A spaCy language model must also be downloaded, e.g.::
 
@@ -50,7 +50,7 @@ class SpacyMatcher:
             import spacy  # noqa: F401
         except ImportError as exc:
             raise ImportError(
-                "spaCy is required for SpacyMatcher. Install with: pip install chonk[spacy]"
+                "spaCy is required for SpacyMatcher. Install with: pip install chonk-rag[spacy]"
             ) from exc
         import spacy as _spacy
 

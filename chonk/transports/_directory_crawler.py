@@ -164,7 +164,9 @@ class DirectoryCrawler:
         try:
             import boto3  # type: ignore[import]
         except ImportError as exc:
-            raise ImportError("pip install chonk[s3]  # boto3 required for S3 crawling") from exc
+            raise ImportError(
+                "pip install chonk-rag[s3]  # boto3 required for S3 crawling"
+            ) from exc
 
         parsed = urlparse(uri)
         bucket = parsed.netloc

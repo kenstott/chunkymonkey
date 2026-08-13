@@ -464,8 +464,8 @@ wheels = [
 ]
 
 [[package]]
-name = "chonk"
-version = "0.2.3"
+name = "chonk-rag"
+version = "0.2.4"
 source = { editable = "." }
 dependencies = [
     { name = "sentence-transformers" },

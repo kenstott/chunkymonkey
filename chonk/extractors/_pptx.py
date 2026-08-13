@@ -58,7 +58,7 @@ class PptxExtractor:
 
     def extract(self, data: bytes, source_path: str | None = None) -> str:
         if not _PPTX_AVAILABLE:
-            raise ImportError("pip install chonk[pptx]")
+            raise ImportError("pip install chonk-rag[pptx]")
         assert _pptx_module is not None
 
         prs = _pptx_module.Presentation(BytesIO(data))
@@ -71,7 +71,7 @@ class PptxExtractor:
         source_path: str | None = None,
     ) -> list[DocumentChunk]:
         if not _PPTX_AVAILABLE:
-            raise ImportError("pip install chonk[pptx]")
+            raise ImportError("pip install chonk-rag[pptx]")
         assert _pptx_module is not None
 
         prs = _pptx_module.Presentation(BytesIO(data))

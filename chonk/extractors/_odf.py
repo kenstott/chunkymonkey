@@ -96,7 +96,7 @@ class OdfExtractor:
     def extract(self, data: bytes, source_path: str | None = None) -> str:
         if not _ODF_AVAILABLE:
             raise ImportError(
-                "odfpy is required for ODF extraction. Install it with: pip install chonk[odf]"
+                "odfpy is required for ODF extraction. Install it with: pip install chonk-rag[odf]"
             )
 
         from odf.opendocument import load as odf_load

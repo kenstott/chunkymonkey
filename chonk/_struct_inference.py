@@ -156,7 +156,7 @@ def infer_parquet(data: bytes, ext: str, name: str) -> TableMeta:
     except ImportError as exc:
         raise ImportError(
             "pyarrow is required for parquet/arrow/feather schema inference. "
-            "Install with: pip install chonk[parquet]"
+            "Install with: pip install chonk-rag[parquet]"
         ) from exc
 
     buf = pa.BufferReader(data)

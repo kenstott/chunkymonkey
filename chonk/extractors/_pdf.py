@@ -32,7 +32,7 @@ class PdfExtractor:
 
     def extract(self, data: bytes, source_path: str | None = None) -> str:
         if not _PYPDF_AVAILABLE:
-            raise ImportError("pip install chonk[pdf]")
+            raise ImportError("pip install chonk-rag[pdf]")
         assert pypdf is not None
 
         reader = pypdf.PdfReader(BytesIO(data))
@@ -50,7 +50,7 @@ class PdfExtractor:
         source_path: str | None = None,
     ) -> list[DocumentChunk]:
         if not _PYPDF_AVAILABLE:
-            raise ImportError("pip install chonk[pdf]")
+            raise ImportError("pip install chonk-rag[pdf]")
         assert pypdf is not None
 
         reader = pypdf.PdfReader(BytesIO(data))

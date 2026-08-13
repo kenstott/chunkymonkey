@@ -31,7 +31,7 @@ class S3Transport:
 
     def fetch(self, uri: str, options: FetchOptions | None = None) -> FetchResult:
         if not _BOTO3_AVAILABLE:
-            raise ImportError("pip install chonk[s3]")
+            raise ImportError("pip install chonk-rag[s3]")
 
         parsed = urlparse(uri)
         bucket = parsed.netloc

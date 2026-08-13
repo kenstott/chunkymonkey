@@ -10,19 +10,21 @@
 import pytest
 
 try:
-    import duckdb
+    import duckdb  # noqa: F401 — availability probe only
     import numpy as np
+
     from chonk.storage import Store
+
     STORAGE_AVAILABLE = True
 except ImportError:
     STORAGE_AVAILABLE = False
 
 pytestmark = pytest.mark.skipif(
     not STORAGE_AVAILABLE,
-    reason="chonk[storage] not installed — pip install chonk[storage]",
+    reason="chonk-rag[storage] not installed — pip install chonk-rag[storage]",
 )
 
-from chonk.models import DocumentChunk
+from chonk.models import DocumentChunk  # noqa: E402 — after the skip guard above
 
 
 def make_chunks(n=3):

@@ -31,7 +31,7 @@ def _pg_connect(dsn: str) -> Any:  # noqa: ANN401
     try:
         import psycopg2  # type: ignore[import-untyped]
     except ImportError as exc:
-        raise ImportError("psycopg2 required: pip install chonk[pgvector]") from exc
+        raise ImportError("psycopg2 required: pip install chonk-rag[pgvector]") from exc
     conn = psycopg2.connect(dsn)
     conn.autocommit = False
     return conn

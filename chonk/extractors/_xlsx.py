@@ -56,7 +56,7 @@ class XlsxExtractor:
 
     def extract(self, data: bytes, source_path: str | None = None) -> str:
         if not _OPENPYXL_AVAILABLE:
-            raise ImportError("pip install chonk[xlsx]")
+            raise ImportError("pip install chonk-rag[xlsx]")
         assert _openpyxl is not None
 
         wb = _openpyxl.load_workbook(BytesIO(data), data_only=True)
@@ -69,7 +69,7 @@ class XlsxExtractor:
         source_path: str | None = None,
     ) -> list[DocumentChunk]:
         if not _OPENPYXL_AVAILABLE:
-            raise ImportError("pip install chonk[xlsx]")
+            raise ImportError("pip install chonk-rag[xlsx]")
         assert _openpyxl is not None
 
         wb = _openpyxl.load_workbook(BytesIO(data), data_only=True)

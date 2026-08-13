@@ -218,7 +218,7 @@ class SharePointCrawler:
             import requests as _requests
         except ImportError:
             raise ImportError(
-                "pip install chonk[http]  # requests required for SharePointCrawler"
+                "pip install chonk-rag[http]  # requests required for SharePointCrawler"
             ) from None
 
         self._cache.clear()

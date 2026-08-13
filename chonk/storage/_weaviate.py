@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 _MISSING_DEPS_MSG = (
     "weaviate-client>=4 is required for WeaviateVectorBackend. "
-    "Install it with: pip install chonk[weaviate]"
+    "Install it with: pip install chonk-rag[weaviate]"
 )
 
 _COLLECTION_PROPERTIES = [

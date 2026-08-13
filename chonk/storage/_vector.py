@@ -80,7 +80,7 @@ def _deserialize_section(value: Any) -> list[str]:  # noqa: ANN401
 
 
 _MISSING_DEPS_MSG = (
-    "duckdb and numpy are required for storage. Install them with: pip install chonk[storage]"
+    "duckdb and numpy are required for storage. Install them with: pip install chonk-rag[storage]"
 )
 
 
