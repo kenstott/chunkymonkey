@@ -2,11 +2,10 @@ name: Release
 
 # Publishes chonk to PyPI when a v* tag is pushed.
 #
-# Authentication uses PyPI Trusted Publishing (OIDC) — no API token is stored in
-# this repository. One-time setup on PyPI: Manage project → Publishing → add a
-# GitHub publisher with owner `kenstott`, repository `chonk`, workflow
-# `release.yml`, and environment `pypi`. Until that publisher exists the publish
-# step fails with an OIDC error; nothing else in the job touches PyPI.
+# Authentication uses the PYPI_API_TOKEN repository secret, matching how the
+# provisa repo publishes. Set it with:
+#   gh secret set PYPI_API_TOKEN --repo kenstott/chonk
+# Without it the publish step fails; nothing else in the job touches PyPI.
 #
 # The tag must match the version in pyproject.toml — the job fails loudly rather
 # than publishing a version nobody asked for.
@@ -69,9 +68,6 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write # required for Trusted Publishing
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -80,3 +76,7 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
