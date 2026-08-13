@@ -46,6 +46,11 @@ jobs:
       - name: Sync environment
         run: uv sync --all-extras --group dev
 
+      # Several NER tests load this model directly; without it they error rather
+      # than skip, so the release gate needs it present.
+      - name: Download spaCy model
+        run: uv run python -m spacy download en_core_web_sm
+
       - name: Run tests
         run: uv run pytest tests/unit -q
 
