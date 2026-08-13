@@ -40,7 +40,7 @@ class ParquetExtractor:
         except ImportError as exc:
             raise ImportError(
                 "pyarrow is required for parquet/arrow/feather extraction. "
-                "Install with: pip install chonk[parquet]"
+                "Install with: pip install chonk-rag[parquet]"
             ) from exc
 
         ext = os.path.splitext(source_path or "")[1].lower()

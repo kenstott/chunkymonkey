@@ -65,7 +65,7 @@ def _agglomerative(
     except ImportError as e:
         raise ImportError(
             "scikit-learn and numpy are required for agglomerative clustering. "
-            "Install with: pip install chonk[cluster]"
+            "Install with: pip install chonk-rag[cluster]"
         ) from e
 
     n = len(entities)
@@ -119,7 +119,7 @@ def _dbscan(
     except ImportError as e:
         raise ImportError(
             "scikit-learn and numpy are required for DBSCAN clustering. "
-            "Install with: pip install chonk[cluster]"
+            "Install with: pip install chonk-rag[cluster]"
         ) from e
 
     n = len(entities)
@@ -175,7 +175,7 @@ def _leiden(
     except ImportError as e:
         raise ImportError(
             "igraph and leidenalg are required for Leiden clustering. "
-            "Install with: pip install chonk[leiden]"
+            "Install with: pip install chonk-rag[leiden]"
         ) from e
 
     idx = {e: i for i, e in enumerate(entities)}

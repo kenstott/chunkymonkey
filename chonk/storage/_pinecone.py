@@ -34,7 +34,8 @@ from . import _cascade
 logger = logging.getLogger(__name__)
 
 _MISSING_DEPS_MSG = (
-    "pinecone is required for PineconeVectorBackend. Install it with: pip install chonk[pinecone]"
+    "pinecone is required for PineconeVectorBackend. "
+    "Install it with: pip install chonk-rag[pinecone]"
 )
 
 _CATALOG_DDL = [

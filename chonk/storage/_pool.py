@@ -186,7 +186,7 @@ class ThreadLocalDuckDB:
     ) -> None:
         if not _DUCKDB_AVAILABLE:
             raise ImportError(
-                "duckdb is required for storage. Install it with: pip install chonk[storage]"
+                "duckdb is required for storage. Install it with: pip install chonk-rag[storage]"
             )
         assert duckdb is not None  # guaranteed by _DUCKDB_AVAILABLE check above
         self._db_path = str(db_path)

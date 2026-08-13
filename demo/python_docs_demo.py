@@ -35,7 +35,7 @@ SHOWS TWO EFFECTS:
   2. CLUSTERING — contextual chunks from the same Python type/class cluster
                   more tightly than naive chunks (intra > inter, bigger gap).
 
-Requires: pip install chonk[http]  (adds requests)
+Requires: pip install chonk-rag[http]  (adds requests)
           Network access to docs.python.org
 
 Usage:
@@ -243,7 +243,7 @@ def main(max_pages: int = 60) -> None:
         urls = crawler.crawl(ROOT_URL)
     except Exception as exc:
         print(f"ERROR: crawl failed — {exc}")
-        print("Check network access and that pip install chonk[http] is done.")
+        print("Check network access and that pip install chonk-rag[http] is done.")
         sys.exit(1)
 
     if not urls:

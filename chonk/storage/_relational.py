@@ -28,7 +28,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _MISSING_SA_MSG = (
-    "sqlalchemy is required for relational storage. Install it with: pip install chonk[storage]"
+    "sqlalchemy is required for relational storage. Install it with: pip install chonk-rag[storage]"
 )
 
 _ENTITIES_DDL = """

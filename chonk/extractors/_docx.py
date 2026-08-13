@@ -61,7 +61,7 @@ class DocxExtractor:
 
     def extract(self, data: bytes, source_path: str | None = None) -> str:
         if not _DOCX_AVAILABLE:
-            raise ImportError(f"pip install chonk[docx] (loading {source_path or 'unknown'})")
+            raise ImportError(f"pip install chonk-rag[docx] (loading {source_path or 'unknown'})")
         import docx as _docx
 
         doc = _docx.Document(BytesIO(data))
@@ -71,7 +71,7 @@ class DocxExtractor:
         self, chunks: list[DocumentChunk], data: bytes, source_path: str | None = None
     ) -> list[DocumentChunk]:
         if not _DOCX_AVAILABLE:
-            raise ImportError(f"pip install chonk[docx] (loading {source_path or 'unknown'})")
+            raise ImportError(f"pip install chonk-rag[docx] (loading {source_path or 'unknown'})")
         import docx as _docx
 
         doc = _docx.Document(BytesIO(data))

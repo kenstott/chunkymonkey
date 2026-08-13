@@ -683,7 +683,7 @@ class TestWorkerCoordinatorMechanics:
 
 sentence_transformers = pytest.importorskip(
     "sentence_transformers",
-    reason="sentence-transformers not installed — pip install chonk",
+    reason="sentence-transformers not installed — pip install chonk-rag",
 )
 
 

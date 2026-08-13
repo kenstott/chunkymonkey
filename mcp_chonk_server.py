@@ -3,7 +3,7 @@
 MCP server exposing Chonk search over one or more DuckDB indexes.
 
 Requirements:
-    pip install "chonk[storage]" mcp
+    pip install "chonk-rag[storage]" mcp
 
 Transport (CHONK_TRANSPORT):
     stdio  (default) – local process; MCP host manages the subprocess

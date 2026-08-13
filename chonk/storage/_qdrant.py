@@ -35,7 +35,8 @@ from . import _cascade
 logger = logging.getLogger(__name__)
 
 _MISSING_DEPS_MSG = (
-    "qdrant-client is required for QdrantVectorBackend. Install it with: pip install chonk[qdrant]"
+    "qdrant-client is required for QdrantVectorBackend. "
+    "Install it with: pip install chonk-rag[qdrant]"
 )
 
 # Fixed UUID namespace for deterministic chunk → Qdrant point ID mapping.

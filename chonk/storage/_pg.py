@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 _MISSING_DEPS_MSG = (
     "psycopg2 and pgvector are required for PgVectorBackend. "
-    "Install them with: pip install chonk[pgvector]"
+    "Install them with: pip install chonk-rag[pgvector]"
 )
 
 

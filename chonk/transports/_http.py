@@ -33,7 +33,7 @@ _http_session: requests.Session | None = None
 def _get_http_session() -> requests.Session:
     """Get or create a module-level requests session with cookie persistence."""
     if not _REQUESTS_AVAILABLE:
-        raise ImportError("pip install chonk[http]")
+        raise ImportError("pip install chonk-rag[http]")
 
     global _http_session
     assert _requests is not None  # guarded by _REQUESTS_AVAILABLE check above
