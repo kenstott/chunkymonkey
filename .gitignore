@@ -47,3 +47,9 @@ training/run_metadata.json
 *.out
 *.fls
 *.fdb_latexmk
+
+# Local training artifacts — model weights (GBs) and captured LLM session logs.
+# Neither belongs in version control; the weights exceed GitHub's file limit and
+# the logs contain raw prompt/response traffic.
+/training/mlx_output/
+/training/proxy_logs/

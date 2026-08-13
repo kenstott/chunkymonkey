@@ -152,7 +152,7 @@ class NerPipeline:
         connection: Any,  # noqa: ANN401
         queries: dict[str, str] | list[str] | list[tuple[str, str]],
         entity_type: str = "term",
-        row_limit: int = 10_000,
+        row_limit: int | None = None,
     ) -> NerPipeline:
         """Execute SQL queries against a live DB and add results as data vocab.
 
@@ -171,7 +171,8 @@ class NerPipeline:
                   ``[("SELECT name FROM customers", "customer")]``
 
             entity_type: Default label when ``queries`` is a plain list.
-            row_limit: Maximum rows fetched per query (default 10 000).
+            row_limit: Maximum rows fetched per query. ``None`` (the default) fetches
+                every row — a truncated vocabulary weakens matching silently.
         """
         self._builder.add_from_db(connection, queries, entity_type=entity_type, row_limit=row_limit)
         self._data_dirty = True
