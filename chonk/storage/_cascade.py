@@ -56,6 +56,31 @@ def delete_chunk_dependents(
             run(f"DELETE FROM {table} WHERE chunk_id IN ({placeholders})", batch)  # noqa: S608
 
 
+# Everything clear() must empty besides the chunk rows themselves. `documents`
+# is the one that bites: sync() skips a document whose stored hash is unchanged,
+# so a registry row surviving a wipe makes the next ingest a no-op and the wipe
+# silently permanent.
+DERIVED_TABLES = (
+    "documents",
+    *CHUNK_KEYED_TABLES,
+    "entities",
+    "entity_aliases",
+    "context_graph_edges",
+)
+
+
+def clear_derived(run: Run, table_exists: TableExists) -> None:
+    """Empty every table derived from chunk content.
+
+    The caller deletes the chunk rows themselves; this removes everything keyed
+    to them. Namespace/domain/source registries are deliberately left intact —
+    they describe where content comes from, not the content.
+    """
+    for table in DERIVED_TABLES:
+        if table_exists(table):
+            run(f"DELETE FROM {table}", [])  # noqa: S608
+
+
 def gc_orphaned_entities(run: Run, scalar: Scalar, table_exists: TableExists) -> int:
     """Delete entities nothing references any more, and their dependents.
 

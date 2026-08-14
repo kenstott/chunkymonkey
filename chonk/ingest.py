@@ -525,10 +525,15 @@ class Index:
 
         Returns:
             List of :class:`IndexHandle` objects (one per namespace rebuilt).
+
+        Raises:
+            NotImplementedError: the store is backed by Qdrant, Pinecone, or
+                Weaviate, whose chunk content lives outside a rebuildable local
+                index.
         """
         from .lifecycle import build_namespace_async
 
-        db_path = self._store.vector._conn.execute("PRAGMA database_list").fetchone()[2]
+        db_path, dsn = self._rebuild_target()
         namespaces = [namespace_id] if namespace_id else list(self._domain_map.keys())
         handles = []
         for ns in namespaces:
@@ -536,6 +541,7 @@ class Index:
                 ns,
                 db_path,
                 self._embed_model,
+                dsn=dsn,
                 on_progress=on_progress,
                 on_complete=on_complete,
                 on_error=on_error,
@@ -552,6 +558,27 @@ class Index:
                 h.join()
             self._invalidate_search()
         return handles
+
+    def _rebuild_target(self) -> tuple[str, str | None]:
+        """Return ``(db_path, dsn)`` identifying what build_namespace_async rebuilds.
+
+        Exactly one is meaningful: DuckDB rebuilds from a file, PostgreSQL from a
+        DSN. Reading the path with ``PRAGMA database_list`` would send DuckDB-only
+        syntax to whatever backend is configured, so the backend is identified
+        first.
+        """
+        vector = self._store.vector
+        dsn = getattr(vector, "_dsn", None)
+        if dsn is not None:
+            return "", dsn
+        db = getattr(self._store, "_db", None)
+        if db is None:
+            raise NotImplementedError(
+                f"rebuild() is not supported for {type(vector).__name__}: chunk "
+                f"content lives in an external service, not a local index this "
+                f"process can re-derive. Re-ingest the sources instead."
+            )
+        return db._db_path, None
 
     # -- search ----------------------------------------------------------------
 

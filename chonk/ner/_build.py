@@ -159,6 +159,8 @@ def _build_vocab_matchers(
         ns = entry.get("namespace")
         if entry.get("type") == "static":
             builder.add_entities(entry.get("names", []), entity_type=etype, namespace=ns)
+        elif entry.get("type") == "glossary":
+            builder.add_business_terms(entry.get("names", []), namespace=ns)
         elif entry.get("type") == "db_query":
             builder.add_from_db(entry["connection"], {etype: entry["sql"]}, namespace=ns)
     schema_matcher = builder.build()
@@ -341,8 +343,11 @@ def build_ner(
         spacy_model: spaCy model name.
         use_schema_vocab: Build schema vocabulary from db_schema/api chunks.
         vocab_entities: Extra entity vocab entries — each dict has keys
-            ``type`` ("static" or "db_query"), ``entity_type``, and either
-            ``names`` (static) or ``connection`` + ``sql`` (db_query).
+            ``type`` ("static", "glossary", or "db_query"), ``entity_type``, and
+            either ``names`` (static/glossary) or ``connection`` + ``sql``
+            (db_query). "glossary" entries are matched as schema-shaped
+            identifiers and always carry entity_type "term"; "static" entries are
+            matched verbatim.
             Optional ``namespace``: the namespace that sourced the entries.
             Each resulting entity gets an ``entity_aliases`` row under that
             namespace, so one name sourced from several namespaces keeps one

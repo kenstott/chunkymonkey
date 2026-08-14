@@ -327,9 +327,33 @@ class TestDeleteAndClear:
 
         backend_obj.clear()
 
-        sql = mock_cursor.execute.call_args[0][0]
-        assert "DELETE FROM chonk_embeddings" in sql
+        statements = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        assert any("DELETE FROM chonk_embeddings" in s for s in statements)
         mock_conn.commit.assert_called_once()
+
+    def test_clear_cascades_to_derived_tables(self, backend):
+        """A surviving documents row makes the next sync a no-op against an empty index."""
+        from chonk.storage._cascade import DERIVED_TABLES
+
+        backend_obj, _conn, mock_cursor = backend
+        mock_cursor.fetchone.return_value = (1,)  # _table_exists -> True
+
+        backend_obj.clear()
+
+        statements = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        for table in DERIVED_TABLES:
+            assert any(f"DELETE FROM {table}" in s for s in statements), table
+
+    def test_clear_commits_once_after_the_cascade(self, backend):
+        """Commit last, so the wipe is atomic rather than half-applied."""
+        backend_obj, mock_conn, mock_cursor = backend
+        mock_cursor.fetchone.return_value = (1,)
+
+        backend_obj.clear()
+
+        mock_conn.commit.assert_called_once()
+        statements = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        assert "DELETE FROM context_graph_edges" in statements[-1]
 
 
 class TestCount:

@@ -100,27 +100,43 @@ class NerPipeline:
     # Schema identifier vocabulary
     # ------------------------------------------------------------------
 
-    def add_tables(self, tables: list[object]) -> NerPipeline:
-        """Add table/column names from a list of TableMeta objects."""
-        self._builder.add_tables(tables)
+    def add_tables(self, tables: list[object], namespace: str | None = None) -> NerPipeline:
+        """Add table/column names from a list of TableMeta objects.
+
+        Args:
+            tables: TableMeta-like objects.
+            namespace: Namespace that contributed the schema; unset means global.
+        """
+        self._builder.add_tables(tables, namespace=namespace)
         self._schema_dirty = True
         return self
 
-    def add_endpoints(self, endpoints: list[object]) -> NerPipeline:
+    def add_endpoints(self, endpoints: list[object], namespace: str | None = None) -> NerPipeline:
         """Add path/field names from a list of EndpointMeta objects."""
-        self._builder.add_endpoints(endpoints)
+        self._builder.add_endpoints(endpoints, namespace=namespace)
         self._schema_dirty = True
         return self
 
-    def add_sql(self, ddl: str) -> NerPipeline:
+    def add_sql(self, ddl: str, namespace: str | None = None) -> NerPipeline:
         """Extract table and column names from raw SQL DDL text."""
-        self._builder.add_sql(ddl)
+        self._builder.add_sql(ddl, namespace=namespace)
         self._schema_dirty = True
         return self
 
-    def add_chunks(self, chunks: list[object]) -> NerPipeline:
+    def add_chunks(self, chunks: list[object], namespace: str | None = None) -> NerPipeline:
         """Extract terms from DocumentChunk objects from load_schema()/load_api()."""
-        self._builder.add_chunks(chunks)
+        self._builder.add_chunks(chunks, namespace=namespace)
+        self._schema_dirty = True
+        return self
+
+    def add_business_terms(self, terms: list[str], namespace: str | None = None) -> NerPipeline:
+        """Add glossary terms, matched as schema-shaped identifiers.
+
+        Normalised, singularised, and variant-expanded like schema identifiers —
+        ``"Customer Risk Score"`` matches ``customerRiskScore`` in prose. Use
+        ``add_entities`` instead for literal data values. Entity type is ``"term"``.
+        """
+        self._builder.add_business_terms(terms, namespace=namespace)
         self._schema_dirty = True
         return self
 

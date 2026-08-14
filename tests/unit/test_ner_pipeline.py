@@ -20,25 +20,25 @@ from chonk.ner._schema_vocab import _extract_sql_terms
 class TestNormalization:
     def test_snake_case_matches_prose(self):
         b = SchemaVocabBuilder()
-        b._columns.add("first_name")
+        b._record(b._columns, "first_name", None)
         m = b.build()
         assert len(m.match("The first name field is required.")) == 1
 
     def test_camel_case_matches_prose(self):
         b = SchemaVocabBuilder()
-        b._columns.add("firstName")
+        b._record(b._columns, "firstName", None)
         m = b.build()
         assert len(m.match("Enter the first name here.")) == 1
 
     def test_screaming_snake_matches_prose(self):
         b = SchemaVocabBuilder()
-        b._columns.add("FIRST_NAME")
+        b._record(b._columns, "FIRST_NAME", None)
         m = b.build()
         assert len(m.match("The first name is stored.")) == 1
 
     def test_pascal_case_matches_prose(self):
         b = SchemaVocabBuilder()
-        b._columns.add("EmployeeId")
+        b._record(b._columns, "EmployeeId", None)
         m = b.build()
         assert len(m.match("employee id is the primary key.")) == 1
 

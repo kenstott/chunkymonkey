@@ -773,7 +773,11 @@ class QdrantVectorBackend:
         return count
 
     def clear(self) -> None:
-        """Delete all chunks from Qdrant and the catalog."""
+        """Delete all chunks and everything derived from them.
+
+        Leaves the namespace/domain/source registries intact — those describe
+        where content comes from, not the content itself.
+        """
         from qdrant_client.models import Distance, VectorParams
 
         if self._client.collection_exists(self._collection):
@@ -783,6 +787,7 @@ class QdrantVectorBackend:
             vectors_config=VectorParams(size=self._embedding_dim, distance=Distance.COSINE),
         )
         self._catalog.execute("DELETE FROM embeddings")
+        _cascade.clear_derived(self._run, self._table_exists)
 
     # ------------------------------------------------------------------
     # Count / get_all_chunks
