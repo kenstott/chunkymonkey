@@ -38,7 +38,11 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from ._schema import SchemaMatcher
-from ._vocabulary import VocabularyMatcher, _auto_id
+from ._vocabulary import VocabularyMatcher, _typed_id
+
+# Namespace an unscoped vocabulary term is filed under. Matches the
+# entity_aliases.namespace column default in chonk/storage/_schema.py.
+DEFAULT_NAMESPACE = "global"
 
 if TYPE_CHECKING:
     pass
@@ -242,10 +246,11 @@ class SchemaVocabBuilder:
         self._tables: set[str] = set()
         self._columns: set[str] = set()
         self._api_terms: set[str] = set()
-        # Data-value vocab: list of (display_name, entity_type) tuples.
+        # Data-value vocab: list of (display_name, entity_type, namespace) tuples.
+        # namespace is None when the term is not scoped to one.
         # Uses VocabularyMatcher (plain case-insensitive), not SchemaMatcher
         # (which normalises camelCase/snake_case — wrong for "Acme Corp").
-        self._data_terms: list[tuple[str, str]] = []
+        self._data_terms: list[tuple[str, str, str | None]] = []
 
     # ------------------------------------------------------------------
     # Ingestion
@@ -342,6 +347,7 @@ class SchemaVocabBuilder:
         self,
         names: list[str],
         entity_type: str = "term",
+        namespace: str | None = None,
     ) -> SchemaVocabBuilder:
         """Add a plain list of entity names as data-value vocab.
 
@@ -353,11 +359,14 @@ class SchemaVocabBuilder:
             names: Display-form strings (e.g. ``["Acme Corp", "John Smith"]``).
             entity_type: Label stored on matching ``EntityMatch`` objects
                 (e.g. ``"customer"``, ``"employee"``).  Default ``"term"``.
+            namespace: Namespace that sourced these names.  Recorded as an
+                ``entity_aliases`` row per (entity, namespace) when the vocab is
+                persisted.  ``None`` files them under ``DEFAULT_NAMESPACE``.
         """
         for name in names:
             name = name.strip()
             if len(name) >= self._min:
-                self._data_terms.append((name, entity_type))
+                self._data_terms.append((name, entity_type, namespace))
         return self
 
     def add_from_db(
@@ -366,6 +375,7 @@ class SchemaVocabBuilder:
         queries: dict[str, str] | list[str] | list[tuple[str, str]],
         entity_type: str = "term",
         row_limit: int | None = None,
+        namespace: str | None = None,
     ) -> SchemaVocabBuilder:
         """Execute SQL queries and add result values as data-value vocab.
 
@@ -387,6 +397,9 @@ class SchemaVocabBuilder:
             row_limit: Maximum rows fetched per query. ``None`` (the default) fetches
                 every row. A vocabulary is a set, so a partial one silently weakens
                 matching rather than failing — cap only when the caller means to.
+            namespace: Namespace that sourced these values.  Recorded as an
+                ``entity_aliases`` row per (entity, namespace) when the vocab is
+                persisted.  ``None`` files them under ``DEFAULT_NAMESPACE``.
 
         Returns:
             ``self`` for chaining.
@@ -409,7 +422,7 @@ class SchemaVocabBuilder:
                 values = _execute(conn, wrapped)
                 for val in values:
                     if len(val) >= self._min:
-                        self._data_terms.append((val, etype))
+                        self._data_terms.append((val, etype, namespace))
         finally:
             _maybe_close(conn, connection)
 
@@ -439,17 +452,41 @@ class SchemaVocabBuilder:
         """
         entities = [
             {
-                "id": _auto_id(name),
+                "id": _typed_id(name, etype),
                 "name": name.lower(),
                 "display_name": name,
                 "type": etype,
                 "aliases": [],
             }
-            for name, etype in self._data_terms
+            for name, etype, _ns in self._data_terms
         ]
         return VocabularyMatcher(
             entities, match_mode="case_insensitive", min_entity_length=self._min
         )
+
+    def namespaced_entities(self) -> list[tuple[str, str, str]]:
+        """Return ``(entity_id, alias, namespace)`` for every data term.
+
+        The alias is the lower-cased surface form — the same value stored in
+        ``entities.name``.  An entity id is ``"{entity_type}:{name_slug}"``: the
+        namespace is not part of it, so one name and type sourced from two
+        namespaces yields one entity and two rows here, one per namespace; two
+        types under one name yield two entities.  A term added without a namespace
+        resolves to ``DEFAULT_NAMESPACE`` — the same default the ``entity_aliases``
+        column carries.  Deduplicated, ordered by first insertion.
+        """
+        seen: set[tuple[str, str, str]] = set()
+        out: list[tuple[str, str, str]] = []
+        for name, _etype, ns in self._data_terms:
+            row = (
+                _typed_id(name, _etype),
+                name.lower(),
+                ns if ns is not None else DEFAULT_NAMESPACE,
+            )
+            if row not in seen:
+                seen.add(row)
+                out.append(row)
+        return out
 
     # ------------------------------------------------------------------
     # Introspection

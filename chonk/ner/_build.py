@@ -46,10 +46,18 @@ _ID_SUFFIXES = (
 
 
 def _strip_id_alias(entity_id: str) -> str | None:
-    """Return the suffix-stripped alias for an entity ID, or None if no suffix matches."""
+    """Return the suffix-stripped alias for an entity ID, or None if no suffix matches.
+
+    Operates on the name half of a typed ID (``"term:customer_id"`` → ``"customer"``).
+    Aliases are surface strings matched against document text, so the type prefix
+    is dropped rather than carried into the alias.
+    """
+    from ._vocabulary import split_typed_id
+
+    _etype, name_slug = split_typed_id(entity_id)
     for suffix in _ID_SUFFIXES:
-        if entity_id.endswith(suffix) and len(entity_id) > len(suffix):
-            return entity_id[: -len(suffix)]
+        if name_slug.endswith(suffix) and len(name_slug) > len(suffix):
+            return name_slug[: -len(suffix)]
     return None
 
 
@@ -131,13 +139,15 @@ def _build_vocab_matchers(
     all_chunks: list[DocumentChunk],
     use_schema_vocab: bool,
     vocab_entities: list[dict[str, Any]] | None,
-) -> tuple[SchemaMatcher | None, VocabularyMatcher | None]:
+) -> tuple[SchemaMatcher | None, VocabularyMatcher | None, list[tuple[str, str, str]]]:
     """Build schema and data matchers when vocabulary sources are configured.
 
-    Returns (schema_matcher, data_matcher) — either may be None.
+    Returns (schema_matcher, data_matcher, namespaced_entities) — either matcher
+    may be None.  namespaced_entities is ``(entity_id, alias, namespace)`` for
+    every vocab entry that declared a ``namespace``.
     """
     if not use_schema_vocab and not vocab_entities:
-        return None, None
+        return None, None, []
 
     from ._schema_vocab import SchemaVocabBuilder
 
@@ -146,13 +156,14 @@ def _build_vocab_matchers(
         builder.add_chunks(all_chunks)
     for entry in vocab_entities or []:
         etype = entry.get("entity_type", "term")
+        ns = entry.get("namespace")
         if entry.get("type") == "static":
-            builder.add_entities(entry.get("names", []), entity_type=etype)
+            builder.add_entities(entry.get("names", []), entity_type=etype, namespace=ns)
         elif entry.get("type") == "db_query":
-            builder.add_from_db(entry["connection"], {etype: entry["sql"]})
+            builder.add_from_db(entry["connection"], {etype: entry["sql"]}, namespace=ns)
     schema_matcher = builder.build()
     data_matcher = builder.build_data_matcher() if builder.data_term_count() > 0 else None
-    return schema_matcher, data_matcher
+    return schema_matcher, data_matcher, builder.namespaced_entities()
 
 
 def _collect_chunks_to_process(
@@ -220,8 +231,17 @@ def _persist_associations(
     data: dict[str, Any],
     entity_meta: dict[str, tuple[str, str, str]],
     incremental: bool,
+    namespaced_entities: list[tuple[str, str, str]],
 ) -> None:
-    """Write associations and entities to the DB, clearing first unless incremental."""
+    """Write associations and entities to the DB, clearing first unless incremental.
+
+    ``namespaced_entities`` is ``(entity_id, alias, namespace)``.  An entity id is
+    ``"{entity_type}:{name_slug}"`` — the namespace is not part of it, so the same
+    name and type sourced from several namespaces is one ``entities`` row with one
+    ``entity_aliases`` row per namespace. The alias table is keyed on
+    ``(alias, namespace, entity_id)``, so a name carrying two types in one
+    namespace keeps a row for each. No source is lost either way.
+    """
     if not incremental:
         con.execute("DELETE FROM chunk_entities")
         con.execute("DELETE FROM entities")
@@ -252,10 +272,53 @@ def _persist_associations(
         )
         alias = _strip_id_alias(a["entity_id"])
         if alias:
-            con.execute(
-                "INSERT OR IGNORE INTO entity_aliases(alias, entity_id, source) VALUES (?,?,?)",
-                [alias, a["entity_id"], "strip_suffix"],
-            )
+            # Document-generated alias: scoped to the namespace the chunk was
+            # crawled under. chunk_namespace is None when the source declared no
+            # namespace — the column's 'global' default then applies.
+            if chunk_namespace is None:
+                con.execute(
+                    "INSERT OR IGNORE INTO entity_aliases(alias, entity_id, source) VALUES (?,?,?)",
+                    [alias, a["entity_id"], "strip_suffix"],
+                )
+            else:
+                con.execute(
+                    "INSERT OR IGNORE INTO entity_aliases"
+                    "(alias, entity_id, namespace, source) VALUES (?,?,?,?)",
+                    [alias, a["entity_id"], chunk_namespace, "strip_suffix"],
+                )
+
+    # Namespace tags for vocab-sourced entities. Written only for entities that
+    # actually matched — an entities row must exist, or prune_documents' orphan
+    # sweep would delete the alias row.
+    persisted_ids = {a["entity_id"] for a in data["associations"]}
+    for entity_id, alias, namespace in namespaced_entities:
+        if entity_id not in persisted_ids:
+            continue
+        # (alias, namespace, entity_id) is the primary key, so one alias naming
+        # several entities in a namespace — "john doe" as both customer and
+        # employee — stores one row each. OR IGNORE only skips an exact repeat.
+        con.execute(
+            "INSERT OR IGNORE INTO entity_aliases(alias, entity_id, namespace, source) "
+            "VALUES (?,?,?,?)",
+            [alias, entity_id, namespace, "vocab_source"],
+        )
+
+
+def _denormalize_entity_types(store: Any, data: dict[str, Any]) -> int:  # noqa: ANN401
+    """Copy each chunk's entity types onto its chunk row.
+
+    Entity IDs are ``"{entity_type}:{name_slug}"``, so the type comes straight
+    off the association — no join. Backs ``search(entity_types=[...])`` on every
+    backend, which cannot express a join against chunk_entities.
+    """
+    from ._vocabulary import split_typed_id
+
+    per_chunk: dict[str, set[str]] = {}
+    for a in data["associations"]:
+        entity_type, _name_slug = split_typed_id(a["entity_id"])
+        if entity_type:
+            per_chunk.setdefault(a["chunk_id"], set()).add(entity_type)
+    return store.vector.set_chunk_entity_types({k: sorted(v) for k, v in per_chunk.items()})
 
 
 def build_ner(
@@ -280,6 +343,10 @@ def build_ner(
         vocab_entities: Extra entity vocab entries — each dict has keys
             ``type`` ("static" or "db_query"), ``entity_type``, and either
             ``names`` (static) or ``connection`` + ``sql`` (db_query).
+            Optional ``namespace``: the namespace that sourced the entries.
+            Each resulting entity gets an ``entity_aliases`` row under that
+            namespace, so one name sourced from several namespaces keeps one
+            ``entities`` row and one alias row per namespace.
         force: If True, ignore cache and rebuild all chunks.
 
     Returns:
@@ -301,7 +368,7 @@ def build_ner(
     matcher = SpacyMatcher(model=spacy_model, strip_numeric=True, entity_types=label_types)
 
     all_chunks = store.vector.get_all_chunks()
-    schema_matcher, data_matcher = _build_vocab_matchers(
+    schema_matcher, data_matcher, namespaced_entities = _build_vocab_matchers(
         all_chunks, use_schema_vocab, vocab_entities
     )
     chunks_to_process = _collect_chunks_to_process(all_chunks, skip_ids)
@@ -311,7 +378,8 @@ def build_ner(
     )
 
     data = entity_index.to_dict()
-    _persist_associations(con, data, entity_meta, incremental)
+    _persist_associations(con, data, entity_meta, incremental, namespaced_entities)
+    _denormalize_entity_types(store, data)
 
     all_chunk_count = _all_chunk_id_count(con)
     con.execute(

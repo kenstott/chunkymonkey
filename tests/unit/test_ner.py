@@ -104,7 +104,7 @@ class TestVocabularyMatcher:
         assert any(m.entity_id == "ent_wire_transfer" for m in matches)
         # Text with only uppercase form of the name: "WIRE TRANSFER" — not in vocab as-is
         text2 = "WIRE TRANSFER"
-        matches2 = matcher.match(text2)
+        matcher.match(text2)
         # display_name "Wire Transfer" IS in the lookup in exact mode, so it may match;
         # test that exact-mode lookup is case-sensitive (no lowercase normalisation)
         # regardless of result we just verify the implementation is consistent
@@ -114,7 +114,9 @@ class TestVocabularyMatcher:
         assert any(m.entity_id == "ent_wire_transfer" for m in matches_ci)
 
     def test_min_entity_length(self):
-        short_entities = [{"id": "ent_ab", "name": "ab", "display_name": "AB", "type": "concept", "aliases": []}]
+        short_entities = [
+            {"id": "ent_ab", "name": "ab", "display_name": "AB", "type": "concept", "aliases": []}
+        ]
         matcher = VocabularyMatcher(short_entities, min_entity_length=3)
         assert matcher.match("ab test") == []
 
@@ -132,8 +134,8 @@ class TestVocabularyMatcher:
         matcher = VocabularyMatcher.from_file(vocab_file)
         matches = matcher.match("The balance sheet shows revenue recognition items.")
         ids = {m.entity_id for m in matches}
-        assert "balance_sheet" in ids
-        assert "revenue_recognition" in ids
+        assert "concept:balance_sheet" in ids
+        assert "concept:revenue_recognition" in ids
 
     def test_entity_ids(self):
         matcher = VocabularyMatcher(SAMPLE_ENTITIES)
@@ -145,9 +147,31 @@ def test_auto_id():
     assert _auto_id("OFAC Screening") == "ofac_screening"
 
 
+def test_typed_id_includes_entity_type():
+    from chonk.ner._vocabulary import _typed_id
+
+    assert _typed_id("Mercury", "customer") == "customer:mercury"
+    assert _typed_id("Mercury", "element") == "element:mercury"
+    assert _typed_id("Mercury", "customer") != _typed_id("Mercury", "element")
+    # Entity types are slugged too, so a space or case difference cannot forge a
+    # second identity for the same type.
+    assert _typed_id("Mercury", "Trade Partner") == "trade_partner:mercury"
+
+
+def test_split_typed_id_roundtrip():
+    from chonk.ner._vocabulary import _typed_id, split_typed_id
+
+    assert split_typed_id(_typed_id("Acme Corp", "customer")) == ("customer", "acme_corp")
+    # A name slug can never contain ":", so the split is unambiguous.
+    assert split_typed_id("customer:acme_corp") == ("customer", "acme_corp")
+    # Untyped legacy IDs report an empty type rather than mis-splitting.
+    assert split_typed_id("acme_corp") == ("", "acme_corp")
+
+
 # ---------------------------------------------------------------------------
 # EntityIndex
 # ---------------------------------------------------------------------------
+
 
 class TestEntityIndex:
     def _make_index(self) -> EntityIndex:
@@ -179,7 +203,7 @@ class TestEntityIndex:
 
     def test_scores_positive(self):
         idx = self._make_index()
-        for chunk_id, score in idx.get_chunks_for_entity("ent_wire_transfer"):
+        for _chunk_id, score in idx.get_chunks_for_entity("ent_wire_transfer"):
             assert score > 0
 
     def test_top_n_limit(self):
@@ -227,12 +251,13 @@ class TestEntityIndex:
 # _strip_span and _overlaps helpers
 # ---------------------------------------------------------------------------
 
+
 class TestStripSpan:
     def test_strips_leading_paren(self):
         text = "(wire transfer)"
         result = _strip_span(text, 0, len(text))
         assert result == (1, len(text) - 1)
-        assert text[result[0]:result[1]] == "wire transfer"
+        assert text[result[0] : result[1]] == "wire transfer"
 
     def test_strips_trailing_comma(self):
         text = "wire transfer,"
@@ -242,7 +267,7 @@ class TestStripSpan:
     def test_strips_mixed_boundary(self):
         text = "  [HCA Healthcare]  "
         result = _strip_span(text, 0, len(text))
-        assert text[result[0]:result[1]] == "HCA Healthcare"
+        assert text[result[0] : result[1]] == "HCA Healthcare"
 
     def test_returns_none_for_pure_punctuation(self):
         text = "---"
@@ -275,6 +300,7 @@ class TestOverlaps:
 # ---------------------------------------------------------------------------
 # merge_matches
 # ---------------------------------------------------------------------------
+
 
 def _make_match(entity_id, display_name, spans, entity_type="concept"):
     return EntityMatch(
@@ -382,13 +408,13 @@ class TestSpacyMatcher:
         so building self._types with str() caused all labels to be rejected.
         """
         from chonk.ner import SpacyLabel, SpacyMatcher
+
         matcher = SpacyMatcher(
             model="en_core_web_sm",
             entity_types=[SpacyLabel.GPE, SpacyLabel.ORG, SpacyLabel.PERSON],
         )
         text = "Apple is based in Cupertino and Tim Cook is the CEO."
         matches = matcher.match(text)
-        entity_types_found = {m.entity_type for m in matches}
         # At least one ORG or GPE or PERSON should be recognised
         assert len(matches) > 0, (
             "SpacyMatcher returned 0 entities — entity_type filter likely uses "
@@ -398,6 +424,7 @@ class TestSpacyMatcher:
     def test_all_labels_default_finds_entities(self):
         """Default ALL_SPACY_LABELS should not suppress every entity."""
         from chonk.ner import SpacyMatcher
+
         matcher = SpacyMatcher(model="en_core_web_sm")
         text = "Barack Obama was born in Hawaii in 1961."
         matches = matcher.match(text)

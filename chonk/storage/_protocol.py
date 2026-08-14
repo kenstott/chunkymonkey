@@ -90,6 +90,8 @@ class VectorBackend(Protocol):
         chunk_types: list[str] | None = None,
         domain_ids: list[str] | None = None,
         session_fingerprint: str | None = None,
+        exclude_chunk_types: list[str] | None = None,
+        entity_types: list[str] | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]: ...  # (chunk_id, score, DocumentChunk)
 
     def get_all_chunks(self) -> list[DocumentChunk]: ...  # used by graph builder

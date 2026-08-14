@@ -59,6 +59,10 @@ def _translate_sql(sql: str) -> str:
     return sql.replace("?", "%s")
 
 
+# Rows per batched UPDATE statement in set_chunk_entity_types.
+_UPDATE_BATCH_SIZE = 1000
+
+
 class _PgResult:
     """DuckDB cursor-compatible result wrapper for psycopg2 results."""
 
@@ -201,6 +205,9 @@ class PgVectorBackend:
                     source_id           TEXT,
                     domain_id           TEXT,
                     session_fingerprint TEXT,
+                    -- Denormalised from chunk_entities so chunks can be filtered
+                    -- by the entity types they mention. Written by build_ner.
+                    entity_types        TEXT[],
                     embedding           vector({self._embedding_dim}),
                     fts_vec             tsvector GENERATED ALWAYS AS
                                         (to_tsvector('english', content)) STORED
@@ -217,6 +224,11 @@ class PgVectorBackend:
             """)
             cur.execute(f"""
                 CREATE INDEX IF NOT EXISTS {t}_fts_idx ON {t} USING gin(fts_vec)
+            """)
+            # GIN backs the && overlap operator used by search(entity_types=[...]).
+            cur.execute(f"""
+                CREATE INDEX IF NOT EXISTS {t}_entity_types_idx
+                ON {t} USING gin(entity_types)
             """)
 
             # Documents registry
@@ -320,7 +332,7 @@ class PgVectorBackend:
                     namespace  TEXT NOT NULL DEFAULT 'global',
                     source     TEXT NOT NULL DEFAULT 'llm',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    PRIMARY KEY (alias, namespace)
+                    PRIMARY KEY (alias, namespace, entity_id)
                 )
             """)
 
@@ -499,6 +511,37 @@ class PgVectorBackend:
                 )
         self._pgconn.commit()
 
+    def set_chunk_entity_types(self, mapping: dict[str, list[str]]) -> int:
+        """Denormalise entity types onto chunk rows. Returns rows written.
+
+        ``mapping`` is ``{chunk_id: [entity_type, ...]}``.
+
+        Batched via ``execute_values`` into a single ``UPDATE … FROM (VALUES …)``:
+        a full rebuild touches every chunk, and one round trip per chunk dominates
+        the cost. Chunked so a large rebuild does not build one enormous statement.
+        """
+        if not mapping:
+            return 0
+        from psycopg2.extras import execute_values
+
+        self._ensure_connection()
+        items = [(chunk_id, sorted(set(types))) for chunk_id, types in mapping.items()]
+        with self._pgconn.cursor() as cur:
+            for start in range(0, len(items), _UPDATE_BATCH_SIZE):
+                execute_values(
+                    cur,
+                    f"""
+                    UPDATE {self._table} AS e
+                    SET entity_types = v.entity_types
+                    FROM (VALUES %s) AS v(chunk_id, entity_types)
+                    WHERE e.chunk_id = v.chunk_id
+                    """,  # noqa: S608
+                    items[start : start + _UPDATE_BATCH_SIZE],
+                    template="(%s, %s::text[])",
+                )
+        self._pgconn.commit()
+        return len(mapping)
+
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
@@ -513,6 +556,8 @@ class PgVectorBackend:
         chunk_types: list[str] | None = None,
         domain_ids: list[str] | None = None,
         session_fingerprint: str | None = None,
+        exclude_chunk_types: list[str] | None = None,
+        entity_types: list[str] | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         """Hybrid (BM25 + vector) or pure vector search via pgvector HNSW index.
 
@@ -543,6 +588,12 @@ class PgVectorBackend:
         if chunk_types is not None:
             clauses.append("chunk_type = ANY(%s)")
             filter_params.append(chunk_types)
+        if exclude_chunk_types is not None:
+            clauses.append("NOT (chunk_type = ANY(%s))")
+            filter_params.append(exclude_chunk_types)
+        if entity_types is not None:
+            clauses.append("entity_types && %s")
+            filter_params.append(list(entity_types))
         if domain_ids is not None:
             clauses.append("domain_id = ANY(%s)")
             filter_params.append(domain_ids)
@@ -635,19 +686,21 @@ class PgVectorBackend:
             )
             vec_ranks = {row[0]: row[1] for row in cur.fetchall()}
 
-        # BM25 ranking
-        safe_query = query_text.replace("'", "''")
+        # BM25 ranking.  query_text is bound as a parameter at both sites — never
+        # interpolated into the SQL text.  psycopg2 binds %s left-to-right, so the
+        # ts_rank occurrence in the SELECT list comes first, then the filter params,
+        # then the WHERE occurrence, then LIMIT.
         bm25_where = (
             where + " AND " if where else "WHERE "
-        ) + f"fts_vec @@ plainto_tsquery('english', '{safe_query}')"
-        bm25_params = filter_params + [candidate_limit]
+        ) + "fts_vec @@ plainto_tsquery('english', %s)"
+        bm25_params = [query_text] + filter_params + [query_text, candidate_limit]
         with self._pgconn.cursor() as cur:
             cur.execute(
                 f"""
                 SELECT chunk_id,
                        ROW_NUMBER() OVER (
                            ORDER BY ts_rank(
-                               fts_vec, plainto_tsquery('english', '{safe_query}')
+                               fts_vec, plainto_tsquery('english', %s)
                            ) DESC
                        ) AS rank
                 FROM {t} {bm25_where}

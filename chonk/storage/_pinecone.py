@@ -55,7 +55,8 @@ _CATALOG_DDL = [
         source_detail       TEXT,
         source_id           TEXT,
         domain_id           TEXT,
-        session_fingerprint TEXT
+        session_fingerprint TEXT,
+        entity_types        VARCHAR[]
     )
     """,
     "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS source_detail TEXT",
@@ -147,7 +148,7 @@ _CATALOG_DDL = [
         namespace   TEXT    NOT NULL DEFAULT 'global',
         source      TEXT    NOT NULL DEFAULT 'llm',
         created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (alias, namespace)
+        PRIMARY KEY (alias, namespace, entity_id)
     )
     """,
     """
@@ -247,6 +248,8 @@ def _build_filter(
     chunk_types: list[str] | None,
     domain_ids: list[str] | None,
     session_fingerprint: str | None,
+    exclude_chunk_types: list[str] | None = None,
+    entity_types: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Build a Pinecone metadata filter dict (MongoDB-style)."""
     clauses: list[dict[str, Any]] = []
@@ -254,6 +257,11 @@ def _build_filter(
         clauses.append({"namespace": {"$in": namespaces}})
     if chunk_types:
         clauses.append({"chunk_type": {"$in": chunk_types}})
+    if exclude_chunk_types:
+        clauses.append({"chunk_type": {"$nin": exclude_chunk_types}})
+    if entity_types:
+        # metadata value is a list; $in matches when any element overlaps
+        clauses.append({"entity_types": {"$in": entity_types}})
     if domain_ids:
         clauses.append({"domain_id": {"$in": domain_ids}})
     if session_fingerprint is not None:
@@ -491,6 +499,8 @@ class PineconeVectorBackend:
         chunk_types: list[str] | None = None,
         domain_ids: list[str] | None = None,
         session_fingerprint: str | None = None,
+        exclude_chunk_types: list[str] | None = None,
+        entity_types: list[str] | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         """Hybrid search: Pinecone ANN + optional BM25 on the DuckDB catalog, merged via RRF.
 
@@ -503,7 +513,14 @@ class PineconeVectorBackend:
         from ..models import DocumentChunk
 
         query_vec = np.array(query_embedding, dtype="float32").flatten().tolist()
-        pine_filter = _build_filter(namespaces, chunk_types, domain_ids, session_fingerprint)
+        pine_filter = _build_filter(
+            namespaces,
+            chunk_types,
+            domain_ids,
+            session_fingerprint,
+            exclude_chunk_types,
+            entity_types,
+        )
 
         fetch_limit = limit * 4
         query_kwargs: dict[str, Any] = {
@@ -563,6 +580,8 @@ class PineconeVectorBackend:
                 limit=fetch_limit,
                 namespaces=namespaces,
                 chunk_types=chunk_types,
+                exclude_chunk_types=exclude_chunk_types,
+                entity_types=entity_types,
                 domain_ids=domain_ids,
                 session_fingerprint=session_fingerprint,
             )
@@ -570,6 +589,21 @@ class PineconeVectorBackend:
                 return self._rrf_merge(vector_results, bm25_results)[:limit]
 
         return vector_results[:limit]
+
+    def set_chunk_entity_types(self, mapping: dict[str, list[str]]) -> int:
+        """Denormalise entity types onto the catalog rows and Pinecone metadata.
+
+        ``mapping`` is ``{chunk_id: [entity_type, ...]}``.
+        """
+        if not mapping:
+            return 0
+        self._catalog.executemany(
+            "UPDATE embeddings SET entity_types = ? WHERE chunk_id = ?",
+            [[sorted(set(t)), cid] for cid, t in mapping.items()],
+        )
+        for chunk_id, types in mapping.items():
+            self._index.update(id=chunk_id, set_metadata={"entity_types": sorted(set(types))})
+        return len(mapping)
 
     def rebuild_fts_index(self) -> None:
         if not self._fts_dirty:
@@ -590,6 +624,8 @@ class PineconeVectorBackend:
         chunk_types: list[str] | None = None,
         domain_ids: list[str] | None = None,
         session_fingerprint: str | None = None,
+        exclude_chunk_types: list[str] | None = None,
+        entity_types: list[str] | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         from ..models import DocumentChunk
 
@@ -606,6 +642,13 @@ class PineconeVectorBackend:
                     phs = ", ".join("?" * len(values))
                     clauses.append(f"e.{col} IN ({phs})")
                     params.extend(values)
+            if exclude_chunk_types is not None:
+                phs = ", ".join("?" * len(exclude_chunk_types))
+                clauses.append(f"e.chunk_type NOT IN ({phs})")
+                params.extend(exclude_chunk_types)
+            if entity_types is not None:
+                clauses.append("list_has_any(e.entity_types, ?)")
+                params.append(list(entity_types))
             if session_fingerprint is not None:
                 clauses.append("e.session_fingerprint = ?")
                 params.append(session_fingerprint)

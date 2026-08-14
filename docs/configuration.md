@@ -149,7 +149,9 @@ There are two sources:
 
 **DB query** — executes a SQL `SELECT` and adds each result row as an entity name. Useful for populating vocabularies from live databases (customer names, product SKUs, employee names, etc.).
 
-Data values are matched verbatim — no camelCase splitting is applied. `SchemaVocabBuilder.add_entities()` and `SchemaVocabBuilder.add_from_db()` both use `build_data_matcher()` to produce a `VocabularyMatcher` that runs alongside the schema matcher; `merge_matches` gives schema hits precedence over spaCy hits, and data-matcher hits supplement the combined result.
+A name may be declared under more than one `entity_type` in the same namespace — `"John Doe"` as both `customer` and `employee`. Each is its own entity (`customer:john_doe`, `employee:john_doe`), and one mention in a document matches both.
+
+Data values are matched verbatim — no camelCase splitting is applied. Runs of whitespace and connector punctuation (`-`, `_`, `/`) are normalised to a single space on both sides of the comparison, so a vocabulary entry `"Acme Corp"` also matches `Acme-Corp`, `Acme  Corp`, and a name broken across a line. Sentence punctuation is left alone, so `"…Acme. Corp…"` does not match. Pass `normalize_separators=False` to `VocabularyMatcher`/`SchemaMatcher` for strict literal matching. `SchemaVocabBuilder.add_entities()` and `SchemaVocabBuilder.add_from_db()` both use `build_data_matcher()` to produce a `VocabularyMatcher` that runs alongside the schema matcher; `merge_matches` gives schema hits precedence over spaCy hits, and data-matcher hits supplement the combined result.
 
 ### TOML vocab declarations
 
@@ -159,6 +161,7 @@ Data values are matched verbatim — no camelCase splitting is applied. `SchemaV
 type        = "static"
 entity_type = "customer"
 names       = ["Acme Corp", "Globex Inc", "Initech"]
+namespace   = "finance"     # optional — omit for "global"
 
 # DB-query populated vocabulary
 [[vocab.entities]]
@@ -166,6 +169,7 @@ type        = "db_query"
 entity_type = "employee"
 connection  = "postgresql://user:pass@host/db"
 sql         = "SELECT full_name FROM employees WHERE active = true"
+namespace   = "hr"          # optional — omit for "global"
 
 [[vocab.entities]]
 type        = "db_query"
@@ -176,6 +180,8 @@ sql         = "SELECT product_name FROM products"
 
 `entity_type` is the label assigned to matched spans (e.g. `"customer"`, `"employee"`, `"product"`). It is stored alongside each entity hit in `chunk_entities`.
 
+`namespace` is supported on **every** vocab entry type and is optional; unset means `global`, the same rule `[[source]]` follows. It records which namespace sourced the names — see [Entity aliases](#entity-aliases) for how that is stored and why a name shared by two namespaces stays a single entity.
+
 ### Library usage
 
 ```python
@@ -183,13 +189,18 @@ from chonk.ner import SchemaVocabBuilder
 
 builder = SchemaVocabBuilder()
 
-# Static names
-builder.add_entities("customer", ["Acme Corp", "Globex Inc"])
+# Static names — namespace is optional; unset means "global"
+builder.add_entities(["Acme Corp", "Globex Inc"], entity_type="customer",
+                     namespace="finance")
 
 # From a DB query
 import duckdb
 con = duckdb.connect("my.duckdb")
-builder.add_from_db("employee", con, "SELECT full_name FROM employees WHERE active = true")
+builder.add_from_db(con, {"employee": "SELECT full_name FROM employees WHERE active = true"},
+                    namespace="hr")
+
+# (entity_id, alias, namespace) for every term, ready to persist as entity_aliases
+builder.namespaced_entities()
 
 data_matcher = builder.build_data_matcher()
 
@@ -285,15 +296,56 @@ n = store.upsert_entity_descriptions_batch(
 # Retrieve descriptions for a list of entity IDs
 descs = store.get_entity_descriptions(["CustomerRiskScore", "FactTable"])
 # → {"CustomerRiskScore": "Composite risk score...", "FactTable": "..."}
+
+# Restrict to entities associated with a chunk in the given namespaces.
+# None (the default) applies no restriction; [] matches nothing.
+descs = store.get_entity_descriptions(["CustomerRiskScore"], namespaces=["finance"])
 ```
+
+Chunk results are already namespace-filtered by `search(namespaces=[...])`, and
+every entity/cluster expansion path is gated on that same set. The `namespaces`
+argument above scopes the *entity metadata* joined into a prompt — including
+entity IDs supplied by `query_entity_id_fn`, which bypass chunk filtering.
+`EnhancedSearch.assemble_graph_context(..., namespaces=[...])` takes the same
+argument for the Entities section of the MS-GraphRAG context block.
 
 ### Entity aliases
 
-The `entity_aliases` table maps alternate names and abbreviations to canonical entity IDs. Primary key is `(alias, namespace)`.
+The `entity_aliases` table maps alternate names and abbreviations to canonical entity IDs. Primary key is `(alias, namespace, entity_id)` — entity_id is part of the key because one alias can name several entities in the same namespace. If John Doe both works at and shops at the same company, `john doe` maps to `employee:john_doe` *and* `customer:john_doe`; each is its own row and neither displaces the other. Use `store.resolve_entity_aliases(alias, namespace)` to get all of them (`resolve_entity_alias` returns the lowest-sorting one).
 
 **Semantics:**
-- `llm` and `schema` sources: first-registration wins — a registered alias cannot be overwritten by another `llm` call.
-- `user` source: always overwrites any existing mapping.
+- `llm` and `schema` sources: first-registration wins *per mapping* — re-adding the same (alias, namespace, entity_id) is a no-op, but the same alias may still be added for a different entity.
+- `user` source: refreshes the `source` column on an existing mapping.
+- The namespace is optional everywhere it appears; unset means `global`.
+
+**Entity identity.** `entities.id` is `"{entity_type}:{name_slug}"`, so
+`customer:mercury` and `element:mercury` are distinct entities. The same holds
+*within* one namespace: if John Doe both works at and shops at the same company
+he is `employee:john_doe` and `customer:john_doe`, and a single mention of his
+name in a document is recorded as evidence for both. A bare name slug
+with no `:` is a pre-4 ID and means the index predates typed IDs — open it and
+`SchemaVersionError` tells you to rebuild.
+
+**Namespace as entity scope.** The ID does *not* include the namespace, so the
+same name and type sourced from two namespaces is *one* entity row. Which namespaces
+sourced it is recorded as one `entity_aliases` row per namespace — the `(alias,
+namespace)` primary key keeps them distinct, so no source is lost:
+
+```python
+# "Acme Corp" sourced from two namespaces
+store.get_entity_namespaces("acme_corp")   # → ["ns_a", "ns_b"]
+```
+
+Two writers produce these rows automatically:
+
+| Source | `source` column | Namespace used |
+| --- | --- | --- |
+| Vocabulary entries (`vocab_entities`, `add_entities`, `add_from_db`) | `vocab_source` | The entry's `namespace`, or `global` |
+| Identifier-suffix aliases (`customer_id` → `customer`) | `strip_suffix` | The namespace the chunk was crawled under, or `global` |
+| SVO/description extraction | `llm` | `EntityGraphPipeline(namespace=...)` |
+
+If `(alias, namespace)` is already registered for a *different* entity, tagging
+raises rather than dropping the tag silently.
 
 Aliases are generated automatically alongside SVO extraction. They can also be added manually:
 
@@ -313,6 +365,64 @@ eid = store.resolve_entity_alias("CRS")   # → "CustomerRiskScore"
 # All aliases for an entity
 aliases = store.get_entity_aliases("CustomerRiskScore")  # → ["CRS", "Risk Score"]
 ```
+
+### Filtering chunks by entity type
+
+Every chunk row carries an `entity_types` array — the set of entity types the
+chunk mentions, denormalized from `chunk_entities` by `build_ner`. It exists so
+retrieval can filter on entity type without a join, which the external vector
+backends cannot express:
+
+```python
+# Chunks that mention at least one customer
+hits = store.search(query_vec, limit=10, entity_types=["customer"])
+
+# Any-overlap semantics: chunks mentioning a customer OR an employee
+hits = store.search(query_vec, limit=10, entity_types=["customer", "employee"])
+```
+
+Supported on all six backends — a native array column on DuckDB (`VARCHAR[]`)
+and PostgreSQL (`TEXT[]`), and filterable payload/metadata on Qdrant, Pinecone,
+and Weaviate, which `set_chunk_entity_types()` writes alongside the catalog row.
+
+Indexed where the backend supports it: a GIN index on PostgreSQL (backing the
+`&&` overlap operator), a keyword payload index on Qdrant, and a filterable
+`TEXT_ARRAY` property on Weaviate. Pinecone indexes metadata automatically.
+DuckDB has no list index — `list_has_any` is a scan over the candidate rows,
+which is fine at the scale DuckDB is used for here.
+
+Two things to know:
+
+- The field is populated by `build_ner`, not at index time — NER runs after
+  chunking. A chunk that has been indexed but not yet NER'd has `entity_types`
+  `NULL` and matches no `entity_types` filter.
+- Types come straight off the entity ID (`customer:john_doe` → `customer`), so
+  there is no join and no second source of truth.
+
+### Which namespaces are relevant to an entity
+
+Two different questions, two accessors — an entity is shared across namespaces,
+so "where was it declared" and "where does it actually appear" diverge:
+
+```python
+# Declaration provenance — which namespace's vocabulary contributed the entity.
+store.get_entity_namespaces("customer:acme_corp")
+# ["global"]   ← a shared customer list declared once, centrally
+
+# Evidence — which namespaces have documents that mention it, ranked.
+store.get_entity_namespace_evidence("customer:acme_corp")
+# [NamespaceEvidence(namespace="retail",  chunk_count=2, score=1.57, share=1.00),
+#  NamespaceEvidence(namespace="support", chunk_count=1, score=0.79, share=0.25)]
+```
+
+Use evidence for routing — "which divisions is this customer relevant to". It
+reads `chunk_entities`, which carries a namespace on every association.
+
+`share` is `chunk_count` over that namespace's total chunk count. Raw counts are
+biased by corpus size: a division with 3 of 5000 chunks mentioning a customer
+outranks one with 2 of 2 on volume alone, while the small one is far more *about*
+them. Both are returned; rank on `share`, size on `chunk_count`. Ordering is by
+summed association score, then count, then namespace.
 
 ### Entity embeddings
 
@@ -972,16 +1082,19 @@ namespace = "public"     # optional
 domain    = "wiki"         # optional
 
 # Entity vocabulary — zero or more; extends spaCy NER
+# namespace is optional on every entry type; unset means "global"
 [[vocab.entities]]
 type        = "static"
 entity_type = "customer"
 names       = ["Acme Corp", "Globex Inc"]
+namespace   = "finance"
 
 [[vocab.entities]]
 type        = "db_query"
 entity_type = "employee"
 connection  = "postgresql://user:pass@host/db"
 sql         = "SELECT full_name FROM employees WHERE active = true"
+namespace   = "hr"
 
 [index]
 out_dir            = "work"

@@ -15,7 +15,17 @@
 #
 # 2 — chunk_id hashes the full chunk content (was: first 100 characters only).
 # 3 — community_cache validity keys off a chunk-id fingerprint (was: chunk count).
-SCHEMA_VERSION = 3
+# 4 — entity IDs are "{entity_type}:{name_slug}" (was: name slug only), so
+#     customer:mercury and element:mercury are distinct entities. Every table
+#     keyed by entity_id — chunk_entities, entity_aliases, svo_triples,
+#     context_graph_edges — holds the old scheme and must be rebuilt.
+SCHEMA_VERSION = 4
+
+# Chunk types chonk generates itself rather than reading from a source document.
+# A bare search() returns them like any other row — callers retrieving document
+# evidence pass exclude_chunk_types=SYNTHETIC_CHUNK_TYPES so a generated summary
+# or entity card is never cited as source text.
+SYNTHETIC_CHUNK_TYPES = ["entity", "community_summary"]
 
 
 class SchemaVersionError(RuntimeError):
@@ -42,6 +52,10 @@ CREATE TABLE IF NOT EXISTS embeddings (
     source_offset INTEGER,
     source_length INTEGER,
     namespace    TEXT,
+    -- Denormalised from chunk_entities so every backend can filter chunks by
+    -- the type of entity they mention without a join. Written by build_ner
+    -- after NER; NULL until then.
+    entity_types VARCHAR[],
     embedding    FLOAT[{dim}]
 )
 """.strip()
@@ -158,7 +172,7 @@ CREATE TABLE IF NOT EXISTS entity_aliases (
     namespace   TEXT    NOT NULL DEFAULT 'global',
     source      TEXT    NOT NULL DEFAULT 'llm',
     created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (alias, namespace)
+    PRIMARY KEY (alias, namespace, entity_id)
 )
 """.strip()
 

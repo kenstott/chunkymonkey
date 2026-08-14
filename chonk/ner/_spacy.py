@@ -22,7 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 from ._spacy_labels import ALL_SPACY_LABELS, SpacyLabel
-from ._vocabulary import EntityMatch, _auto_id
+from ._vocabulary import EntityMatch, _typed_id
 
 
 class SpacyMatcher:
@@ -108,12 +108,13 @@ class SpacyMatcher:
             if not canonical:
                 continue
 
-            eid = _auto_id(canonical)
+            etype = ent.label_.lower()
+            eid = _typed_id(canonical, etype)
             if eid not in found:
                 found[eid] = {
                     "name": canonical,
                     "display_name": surface,
-                    "type": ent.label_.lower(),
+                    "type": etype,
                     "spans": [],
                 }
             found[eid]["spans"].append((ent.start_char, ent.end_char))

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,25 @@ if TYPE_CHECKING:
     from ..models import DocumentChunk
 
 GLOBAL_NAMESPACE = "global"
+
+
+@dataclass(frozen=True)
+class NamespaceEvidence:
+    """How much of a namespace's corpus mentions a given entity.
+
+    Attributes:
+        namespace: The namespace id.
+        chunk_count: Chunks in this namespace associated with the entity.
+        score: Summed association score (``chunk_entities.score``).
+        share: ``chunk_count`` over the namespace's total chunk count — the
+            size-normalised measure. Compare namespaces on this; compare
+            absolute volume on ``chunk_count``.
+    """
+
+    namespace: str
+    chunk_count: int
+    score: float
+    share: float
 
 
 class Store:
@@ -308,6 +328,8 @@ class Store:
         chunk_types: list[str] | None = None,
         domain_ids: list[str] | None = None,
         session_fingerprint: str | None = None,
+        exclude_chunk_types: list[str] | None = None,
+        entity_types: list[str] | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         """Hybrid or pure vector search.
 
@@ -320,6 +342,14 @@ class Store:
                         Independent of namespaces; when both set both apply (AND).
             session_fingerprint: If provided, restrict results to rows with this
                         session_fingerprint. Used to filter community summary chunks.
+            exclude_chunk_types: If provided, drop rows with these chunk_types. A bare
+                        search returns every type; pass SYNTHETIC_CHUNK_TYPES when
+                        retrieving document evidence so generated entity and community
+                        rows are not cited as source text.
+            entity_types: If provided, restrict results to chunks that mention at least
+                        one entity of these types (e.g. ``["customer"]``). Reads the
+                        denormalised ``entity_types`` column, which build_ner populates
+                        after NER — chunks indexed but never NER'd match nothing.
 
         Returns:
             List of (chunk_id, score, DocumentChunk).
@@ -330,6 +360,8 @@ class Store:
             query_text=query_text,
             namespaces=namespaces,
             chunk_types=chunk_types,
+            exclude_chunk_types=exclude_chunk_types,
+            entity_types=entity_types,
             domain_ids=domain_ids,
             session_fingerprint=session_fingerprint,
         )
@@ -525,6 +557,17 @@ class Store:
         ).fetchall()
         self.vector._fts_dirty = True
         return count_before
+
+    def list_namespaces(self) -> list[str]:
+        """Return sorted namespace ids from the catalog.
+
+        Backend-agnostic: reads through the vector backend's connection adapter,
+        so it works against DuckDB and PostgreSQL alike.
+        """
+        rows = self.vector._conn.execute(
+            "SELECT namespace_id FROM namespaces ORDER BY namespace_id"
+        ).fetchall()
+        return [r[0] for r in rows]
 
     def list_domains(self, namespace_id: str) -> list[str]:
         """Return sorted domain names for *namespace_id*."""
@@ -910,15 +953,38 @@ class Store:
             conn.executemany("UPDATE entities SET description = ? WHERE id = ?", rows)
         return len(rows)
 
-    def get_entity_descriptions(self, entity_ids: list[str]) -> dict[str, str]:
-        """Return ``{entity_id: description}`` for the given IDs."""
+    def get_entity_descriptions(
+        self,
+        entity_ids: list[str],
+        namespaces: list[str] | None = None,
+    ) -> dict[str, str]:
+        """Return ``{entity_id: description}`` for the given IDs.
+
+        Args:
+            entity_ids: Entity IDs to look up.
+            namespaces: Restrict to entities associated with a chunk in one of
+                these namespaces. ``None`` applies no restriction; an empty list
+                matches nothing, mirroring ``search(namespaces=[])``.
+        """
         if not entity_ids:
+            return {}
+        if namespaces is not None and not namespaces:
             return {}
         conn = self.vector._conn
         placeholders = ", ".join("?" * len(entity_ids))
+        params: list[Any] = list(entity_ids)
+        ns_clause = ""
+        if namespaces is not None:
+            ns_placeholders = ", ".join("?" * len(namespaces))
+            ns_clause = (
+                f" AND EXISTS (SELECT 1 FROM chunk_entities ce WHERE ce.entity_id = entities.id "
+                f"AND COALESCE(ce.namespace, 'global') IN ({ns_placeholders}))"
+            )
+            params.extend(namespaces)
         rows = conn.execute(
-            f"SELECT id, COALESCE(description, '') FROM entities WHERE id IN ({placeholders})",
-            entity_ids,
+            f"SELECT id, COALESCE(description, '') FROM entities "
+            f"WHERE id IN ({placeholders}){ns_clause}",
+            params,
         ).fetchall()
         return {r[0]: r[1] for r in rows}
 
@@ -942,8 +1008,11 @@ class Store:
     ) -> None:
         """Register *alias* as an alternate name for *entity_id*.
 
-        An alias is unique per namespace — the first registration wins unless
-        source is ``'user'``, which always overwrites.
+        One alias may name several entities in the same namespace — "John Doe"
+        can be both ``customer:john_doe`` and ``employee:john_doe``. Each
+        (alias, namespace, entity_id) mapping is its own row; adding one never
+        displaces another. Re-registering an existing mapping is a no-op unless
+        source is ``'user'``, which refreshes that row's source.
         """
         conn = self.vector._conn
         if source == "user":
@@ -951,9 +1020,8 @@ class Store:
                 """
                 INSERT INTO entity_aliases (alias, entity_id, namespace, source)
                 VALUES (?, ?, ?, ?)
-                ON CONFLICT (alias, namespace) DO UPDATE SET
-                    entity_id = excluded.entity_id,
-                    source    = excluded.source
+                ON CONFLICT (alias, namespace, entity_id) DO UPDATE SET
+                    source = excluded.source
                 """,
                 [alias, entity_id, namespace, source],
             )
@@ -962,7 +1030,7 @@ class Store:
                 """
                 INSERT INTO entity_aliases (alias, entity_id, namespace, source)
                 VALUES (?, ?, ?, ?)
-                ON CONFLICT (alias, namespace) DO NOTHING
+                ON CONFLICT (alias, namespace, entity_id) DO NOTHING
                 """,
                 [alias, entity_id, namespace, source],
             )
@@ -975,13 +1043,16 @@ class Store:
     ) -> int:
         """Register multiple aliases. ``aliases`` maps alias → entity_id.
 
-        Returns count inserted (conflicts silently ignored for non-user sources).
+        A dict holds one entity_id per alias; call repeatedly to map one alias to
+        several entities. Returns the count inserted — an existing mapping for the
+        same (alias, namespace, entity_id) is skipped for non-user sources.
         """
         written = 0
         for alias, entity_id in aliases.items():
             before = self.vector._conn.execute(
-                "SELECT source FROM entity_aliases WHERE alias = ? AND namespace = ?",
-                [alias, namespace],
+                "SELECT source FROM entity_aliases "
+                "WHERE alias = ? AND namespace = ? AND entity_id = ?",
+                [alias, namespace, entity_id],
             ).fetchone()
             if before and source != "user":
                 continue
@@ -994,12 +1065,96 @@ class Store:
         alias: str,
         namespace: str = GLOBAL_NAMESPACE,
     ) -> str | None:
-        """Return the canonical entity_id for *alias*, or None if unknown."""
+        """Return one entity_id for *alias*, or None if unknown.
+
+        An alias may name several entities of different types in the same
+        namespace; this returns the lowest-sorting ID of them. Use
+        :meth:`resolve_entity_aliases` when the caller must see all of them.
+        """
         row = self.vector._conn.execute(
-            "SELECT entity_id FROM entity_aliases WHERE alias = ? AND namespace = ?",
+            "SELECT entity_id FROM entity_aliases WHERE alias = ? AND namespace = ? "
+            "ORDER BY entity_id",
             [alias, namespace],
         ).fetchone()
         return row[0] if row else None
+
+    def resolve_entity_aliases(
+        self,
+        alias: str,
+        namespace: str = GLOBAL_NAMESPACE,
+    ) -> list[str]:
+        """Return every entity_id *alias* names in *namespace*, sorted.
+
+        ``["customer:john_doe", "employee:john_doe"]`` when one person is both.
+        """
+        rows = self.vector._conn.execute(
+            "SELECT entity_id FROM entity_aliases WHERE alias = ? AND namespace = ? "
+            "ORDER BY entity_id",
+            [alias, namespace],
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def get_entity_namespaces(self, entity_id: str) -> list[str]:
+        """Return every namespace *entity_id* was **declared** in, sorted.
+
+        This is declaration provenance, not evidence: it reads ``entity_aliases``,
+        whose rows record which namespace's vocabulary contributed the entity. A
+        shared customer list declared once at ``global`` returns ``["global"]``
+        even when documents in several namespaces mention it. Use
+        :meth:`get_entity_namespace_evidence` for where the entity actually appears.
+        """
+        rows = self.vector._conn.execute(
+            "SELECT DISTINCT namespace FROM entity_aliases WHERE entity_id = ? ORDER BY namespace",
+            [entity_id],
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def get_entity_namespace_evidence(self, entity_id: str) -> list[NamespaceEvidence]:
+        """Return the namespaces whose documents actually mention *entity_id*.
+
+        Evidence, not declaration — reads ``chunk_entities``, so the same customer
+        seen across several divisions ranks by how much each division talks about
+        them. Ordered by score, then chunk count, then namespace.
+
+        ``share`` is ``chunk_count / (chunks in that namespace)``. Without it a
+        large namespace outranks a small one on volume alone; a division with 2 of
+        its 3 chunks mentioning the customer is more about them than one with 5 of
+        5000. Both measures are returned so the caller can choose.
+
+        A chunk row exists for every association — ``_check_cache`` raises on an
+        orphaned ``chunk_entities`` row — so the denominator is never zero here.
+        """
+        conn = self.vector._conn
+        rows = conn.execute(
+            # GROUP BY 1 (ordinal): DuckDB will not match a parameterised
+            # COALESCE() in the GROUP BY against the same expression in SELECT.
+            "SELECT COALESCE(namespace, ?) AS ns, COUNT(*), SUM(score) "
+            "FROM chunk_entities WHERE entity_id = ? "
+            "GROUP BY 1",
+            [GLOBAL_NAMESPACE, entity_id],
+        ).fetchall()
+        if not rows:
+            return []
+
+        totals = {
+            r[0]: r[1]
+            for r in conn.execute(
+                "SELECT COALESCE(namespace, ?) AS ns, COUNT(*) FROM embeddings GROUP BY 1",
+                [GLOBAL_NAMESPACE],
+            ).fetchall()
+        }
+
+        evidence = [
+            NamespaceEvidence(
+                namespace=ns,
+                chunk_count=count,
+                score=float(score_sum or 0.0),
+                share=count / totals[ns],
+            )
+            for ns, count, score_sum in rows
+        ]
+        evidence.sort(key=lambda e: (-e.score, -e.chunk_count, e.namespace))
+        return evidence
 
     def get_entity_aliases(
         self,

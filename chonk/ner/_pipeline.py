@@ -132,6 +132,7 @@ class NerPipeline:
         self,
         names: list[str],
         entity_type: str = "term",
+        namespace: str | None = None,
     ) -> NerPipeline:
         """Add a plain list of known entity names (verbatim, case-insensitive).
 
@@ -142,8 +143,11 @@ class NerPipeline:
             names: Display-form strings, e.g. ``["Acme Corp", "John Smith"]``.
             entity_type: Label on matching ``EntityMatch`` objects
                 (e.g. ``"customer"``, ``"employee"``).
+            namespace: Namespace that sourced these names. Persisted as an
+                ``entity_aliases`` row per (entity, namespace); ``None`` files
+                them under the ``global`` namespace.
         """
-        self._builder.add_entities(names, entity_type=entity_type)
+        self._builder.add_entities(names, entity_type=entity_type, namespace=namespace)
         self._data_dirty = True
         return self
 
@@ -153,6 +157,7 @@ class NerPipeline:
         queries: dict[str, str] | list[str] | list[tuple[str, str]],
         entity_type: str = "term",
         row_limit: int | None = None,
+        namespace: str | None = None,
     ) -> NerPipeline:
         """Execute SQL queries against a live DB and add results as data vocab.
 
@@ -173,8 +178,17 @@ class NerPipeline:
             entity_type: Default label when ``queries`` is a plain list.
             row_limit: Maximum rows fetched per query. ``None`` (the default) fetches
                 every row — a truncated vocabulary weakens matching silently.
+            namespace: Namespace that sourced these values. Persisted as an
+                ``entity_aliases`` row per (entity, namespace); ``None`` files
+                them under the ``global`` namespace.
         """
-        self._builder.add_from_db(connection, queries, entity_type=entity_type, row_limit=row_limit)
+        self._builder.add_from_db(
+            connection,
+            queries,
+            entity_type=entity_type,
+            row_limit=row_limit,
+            namespace=namespace,
+        )
         self._data_dirty = True
         return self
 

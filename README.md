@@ -1995,10 +1995,12 @@ pipeline.add_from_db(
         "counterparty": "SELECT name      FROM counterparties",
     },
     row_limit=50_000,   # max rows per query (default 10 000)
+    namespace="finance",  # optional; unset means the "global" namespace
 )
 
 # --- Data vocab: plain list (CRM export, config file, spreadsheet, etc.) ---
-pipeline.add_entities(["Acme Corp", "Globex"], entity_type="customer")
+pipeline.add_entities(["Acme Corp", "Globex"], entity_type="customer",
+                      namespace="finance")
 
 # Run against document chunks
 matches = pipeline.match(chunk.content)
@@ -2012,6 +2014,17 @@ pipeline.run_on_chunks(chunks, entity_index)
 - Nulls are dropped and values are deduplicated before being added.
 - Data values are matched verbatim (case-insensitive) — no camelCase splitting.
   "Acme Corp" matches "Acme Corp", not "acme corp".
+- `entity_type` is part of the entity ID (`"{entity_type}:{name_slug}"`), so
+  `customer:mercury` and `element:mercury` never collide. The same name may be
+  declared under two types in one namespace — John Doe as both `customer` and
+  `employee` — and a single mention counts as evidence for both.
+- Types are denormalized onto each chunk as `entity_types`, so retrieval can
+  filter on them: `store.search(vec, entity_types=["customer"])`.
+- `namespace` records which namespace sourced the values. It is optional; unset
+  files them under `global`. The namespace is *not* part of the ID, so the same
+  name and type from two namespaces stays **one** entity with one
+  `entity_aliases` row per namespace — read them back with
+  `store.get_entity_namespaces(entity_id)`.
 
 Schema identifiers are normalised: `firstName`, `first_name`, and `FIRST_NAME`
 all match the prose form `"first name"`, surfacing connections between your

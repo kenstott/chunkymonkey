@@ -59,7 +59,8 @@ _CATALOG_DDL = [
         source_detail       TEXT,
         source_id           TEXT,
         domain_id           TEXT,
-        session_fingerprint TEXT
+        session_fingerprint TEXT,
+        entity_types        VARCHAR[]
     )
     """,
     "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS source_detail TEXT",
@@ -144,7 +145,7 @@ _CATALOG_DDL = [
         namespace   TEXT    NOT NULL DEFAULT 'global',
         source      TEXT    NOT NULL DEFAULT 'llm',
         created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (alias, namespace)
+        PRIMARY KEY (alias, namespace, entity_id)
     )
     """,
     """
@@ -328,6 +329,15 @@ class QdrantVectorBackend:
             logger.debug(
                 "Created Qdrant collection %r (dim=%d)", self._collection, self._embedding_dim
             )
+            # Keyword payload index backs search(entity_types=[...]); without it
+            # Qdrant falls back to a full payload scan for that condition.
+            from qdrant_client.models import PayloadSchemaType
+
+            self._client.create_payload_index(
+                collection_name=self._collection,
+                field_name="entity_types",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
 
     # ------------------------------------------------------------------
     # Ingestion
@@ -449,6 +459,8 @@ class QdrantVectorBackend:
         chunk_types: list[str] | None = None,
         domain_ids: list[str] | None = None,
         session_fingerprint: str | None = None,
+        exclude_chunk_types: list[str] | None = None,
+        entity_types: list[str] | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         """Hybrid search: Qdrant ANN + optional BM25 on the DuckDB catalog, merged via RRF.
 
@@ -462,7 +474,14 @@ class QdrantVectorBackend:
         from ..models import DocumentChunk
 
         query_vec = np.array(query_embedding, dtype="float32").flatten().tolist()
-        qdrant_filter = _build_filter(namespaces, chunk_types, domain_ids, session_fingerprint)
+        qdrant_filter = _build_filter(
+            namespaces,
+            chunk_types,
+            domain_ids,
+            session_fingerprint,
+            exclude_chunk_types,
+            entity_types,
+        )
 
         # Over-fetch so the catalog join can still return `limit` results
         # after filtering orphaned points.
@@ -530,6 +549,8 @@ class QdrantVectorBackend:
                 limit=fetch_limit,
                 namespaces=namespaces,
                 chunk_types=chunk_types,
+                exclude_chunk_types=exclude_chunk_types,
+                entity_types=entity_types,
                 domain_ids=domain_ids,
                 session_fingerprint=session_fingerprint,
             )
@@ -537,6 +558,27 @@ class QdrantVectorBackend:
                 return self._rrf_merge(vector_results, bm25_results)[:limit]
 
         return vector_results[:limit]
+
+    def set_chunk_entity_types(self, mapping: dict[str, list[str]]) -> int:
+        """Denormalise entity types onto the catalog rows and Qdrant payloads.
+
+        ``mapping`` is ``{chunk_id: [entity_type, ...]}``. Both stores are
+        updated: the catalog backs BM25 filtering, the payload backs the
+        server-side ANN filter.
+        """
+        if not mapping:
+            return 0
+        self._catalog.executemany(
+            "UPDATE embeddings SET entity_types = ? WHERE chunk_id = ?",
+            [[sorted(set(t)), cid] for cid, t in mapping.items()],
+        )
+        for chunk_id, types in mapping.items():
+            self._client.set_payload(
+                collection_name=self._collection,
+                payload={"entity_types": sorted(set(types))},
+                points=[_chunk_uuid(chunk_id)],
+            )
+        return len(mapping)
 
     def rebuild_fts_index(self) -> None:
         if not self._fts_dirty:
@@ -557,6 +599,8 @@ class QdrantVectorBackend:
         chunk_types: list[str] | None = None,
         domain_ids: list[str] | None = None,
         session_fingerprint: str | None = None,
+        exclude_chunk_types: list[str] | None = None,
+        entity_types: list[str] | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         from ..models import DocumentChunk
 
@@ -573,6 +617,13 @@ class QdrantVectorBackend:
                     phs = ", ".join("?" * len(values))
                     clauses.append(f"e.{col} IN ({phs})")
                     params.extend(values)
+            if exclude_chunk_types is not None:
+                phs = ", ".join("?" * len(exclude_chunk_types))
+                clauses.append(f"e.chunk_type NOT IN ({phs})")
+                params.extend(exclude_chunk_types)
+            if entity_types is not None:
+                clauses.append("list_has_any(e.entity_types, ?)")
+                params.append(list(entity_types))
             if session_fingerprint is not None:
                 clauses.append("e.session_fingerprint = ?")
                 params.append(session_fingerprint)
@@ -913,15 +964,25 @@ def _build_filter(
     chunk_types: list[str] | None,
     domain_ids: list[str] | None,
     session_fingerprint: str | None,
+    exclude_chunk_types: list[str] | None = None,
+    entity_types: list[str] | None = None,
 ) -> Any:  # noqa: ANN401
     """Build a Qdrant Filter from search parameters, or None if no filters."""
-    from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
+    from qdrant_client.models import Condition, FieldCondition, Filter, MatchAny, MatchValue
 
-    conditions = []
+    conditions: list[Condition] = []
     if namespaces is not None:
         conditions.append(FieldCondition(key="namespace", match=MatchAny(any=namespaces)))
     if chunk_types is not None:
         conditions.append(FieldCondition(key="chunk_type", match=MatchAny(any=chunk_types)))
+    must_not: list[Condition] = (
+        [FieldCondition(key="chunk_type", match=MatchAny(any=exclude_chunk_types))]
+        if exclude_chunk_types is not None
+        else []
+    )
+    if entity_types is not None:
+        # payload value is a list; MatchAny matches when any element overlaps
+        conditions.append(FieldCondition(key="entity_types", match=MatchAny(any=entity_types)))
     if domain_ids is not None:
         conditions.append(FieldCondition(key="domain_id", match=MatchAny(any=domain_ids)))
     if session_fingerprint is not None:
@@ -929,4 +990,6 @@ def _build_filter(
             FieldCondition(key="session_fingerprint", match=MatchValue(value=session_fingerprint))
         )
 
-    return Filter(must=conditions) if conditions else None
+    if not conditions and not must_not:
+        return None
+    return Filter(must=conditions or None, must_not=must_not or None)
