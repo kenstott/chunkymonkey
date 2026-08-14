@@ -37,7 +37,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from ._schema import SchemaMatcher
+from ._schema import SchemaMatcher, normalize_schema_term
 from ._vocabulary import VocabularyMatcher, _typed_id
 
 # Namespace an unscoped vocabulary term is filed under. Matches the
@@ -243,9 +243,14 @@ class SchemaVocabBuilder:
 
     def __init__(self, min_term_length: int = 2) -> None:
         self._min = min_term_length
-        self._tables: set[str] = set()
-        self._columns: set[str] = set()
-        self._api_terms: set[str] = set()
+        # Schema-shaped vocab: term -> {namespace, ...}. A term may be contributed
+        # by more than one namespace, so the value is a set rather than a scalar.
+        # These go through SchemaMatcher (camelCase/snake_case normalisation,
+        # singularisation, variant expansion).
+        self._tables: dict[str, set[str]] = {}
+        self._columns: dict[str, set[str]] = {}
+        self._api_terms: dict[str, set[str]] = {}
+        self._business_terms: dict[str, set[str]] = {}
         # Data-value vocab: list of (display_name, entity_type, namespace) tuples.
         # namespace is None when the term is not scoped to one.
         # Uses VocabularyMatcher (plain case-insensitive), not SchemaMatcher
@@ -256,7 +261,14 @@ class SchemaVocabBuilder:
     # Ingestion
     # ------------------------------------------------------------------
 
-    def add_tables(self, tables: list[object]) -> SchemaVocabBuilder:
+    @staticmethod
+    def _record(bucket: dict[str, set[str]], term: str, namespace: str | None) -> None:
+        """Add *term* to *bucket*, tracking which namespace contributed it."""
+        bucket.setdefault(term, set()).add(
+            namespace if namespace is not None else DEFAULT_NAMESPACE
+        )
+
+    def add_tables(self, tables: list[object], namespace: str | None = None) -> SchemaVocabBuilder:
         """Add terms from a list of TableMeta objects (and their ColumnMeta).
 
         Accepts any object with a ``.name`` attribute and an optional
@@ -265,37 +277,39 @@ class SchemaVocabBuilder:
         for table in tables:
             name = getattr(table, "name", None)
             if name and len(name) >= self._min:
-                self._tables.add(name)
+                self._record(self._tables, name, namespace)
             for col in getattr(table, "columns", None) or []:
                 col_name = getattr(col, "name", None)
                 if col_name and len(col_name) >= self._min:
-                    self._columns.add(col_name)
+                    self._record(self._columns, col_name, namespace)
         return self
 
-    def add_endpoints(self, endpoints: list[object]) -> SchemaVocabBuilder:
+    def add_endpoints(
+        self, endpoints: list[object], namespace: str | None = None
+    ) -> SchemaVocabBuilder:
         """Add terms from a list of EndpointMeta / FieldMeta objects."""
         for ep in endpoints:
             path = getattr(ep, "path", None)
             if path and len(path) >= self._min:
-                self._api_terms.add(path)
+                self._record(self._api_terms, path, namespace)
             for field in getattr(ep, "fields", None) or []:
                 name = getattr(field, "name", None)
                 if name and len(name) >= self._min:
-                    self._columns.add(name)
+                    self._record(self._columns, name, namespace)
         return self
 
-    def add_sql(self, ddl: str) -> SchemaVocabBuilder:
+    def add_sql(self, ddl: str, namespace: str | None = None) -> SchemaVocabBuilder:
         """Extract and add table/column names from raw SQL DDL text."""
         tables, columns = _extract_sql_terms(ddl)
         for t in tables:
             if len(t) >= self._min:
-                self._tables.add(t)
+                self._record(self._tables, t, namespace)
         for c in columns:
             if len(c) >= self._min:
-                self._columns.add(c)
+                self._record(self._columns, c, namespace)
         return self
 
-    def add_chunks(self, chunks: list[Any]) -> SchemaVocabBuilder:  # noqa: ANN401
+    def add_chunks(self, chunks: list[Any], namespace: str | None = None) -> SchemaVocabBuilder:  # noqa: ANN401
         """Extract terms from DocumentChunk objects produced by load_schema() / load_api().
 
         Document names follow the pattern:
@@ -315,11 +329,11 @@ class SchemaVocabBuilder:
                 if len(parts) >= 2:
                     table = parts[1]
                     if len(table) >= self._min:
-                        self._tables.add(table)
+                        self._record(self._tables, table, namespace)
                 if len(parts) >= 3:
                     col = parts[2]
                     if len(col) >= self._min:
-                        self._columns.add(col)
+                        self._record(self._columns, col, namespace)
 
             elif chunk_type in (
                 "api_endpoint",
@@ -332,15 +346,41 @@ class SchemaVocabBuilder:
                     if len(parts) >= 2:
                         path = parts[1]
                         if len(path) >= self._min:
-                            self._api_terms.add(path)
+                            self._record(self._api_terms, path, namespace)
 
             elif chunk_type == "api_field" and doc_name.startswith("api:"):
                 parts = doc_name[len("api:") :].split(".")
                 if len(parts) >= 3:
                     field = parts[-1]
                     if len(field) >= self._min:
-                        self._columns.add(field)
+                        self._record(self._columns, field, namespace)
 
+        return self
+
+    def add_business_terms(
+        self,
+        terms: list[str],
+        namespace: str | None = None,
+    ) -> SchemaVocabBuilder:
+        """Add glossary / business terms, matched as schema-shaped identifiers.
+
+        Unlike :meth:`add_entities`, these run through ``SchemaMatcher``: they are
+        normalised (``customerRiskScore`` → ``"customer risk score"``), singularised,
+        and variant-expanded, so a glossary entry matches the prose forms a document
+        actually uses. Use this for a glossary; use ``add_entities`` for literal data
+        values like company names.
+
+        Matched spans carry entity_type ``"term"``, so IDs are ``term:<slug>``.
+
+        Args:
+            terms: Glossary terms, e.g. ``["Customer Risk Score", "wire transfer"]``.
+            namespace: Namespace that contributed the glossary. ``None`` files the
+                terms under ``DEFAULT_NAMESPACE``.
+        """
+        for term in terms:
+            term = term.strip()
+            if len(term) >= self._min:
+                self._record(self._business_terms, term, namespace)
         return self
 
     def add_entities(
@@ -442,6 +482,7 @@ class SchemaVocabBuilder:
         return SchemaMatcher(
             schema_terms=list(self._tables) + list(self._columns),
             api_terms=list(self._api_terms),
+            business_terms=list(self._business_terms),
         )
 
     def build_data_matcher(self) -> VocabularyMatcher:
@@ -477,6 +518,26 @@ class SchemaVocabBuilder:
         """
         seen: set[tuple[str, str, str]] = set()
         out: list[tuple[str, str, str]] = []
+
+        # Schema-shaped buckets first. Their ids and names come from
+        # normalize_schema_term, matching how SchemaMatcher registers them, so the
+        # alias equals the entity's `name` column exactly as for data terms.
+        for bucket, etype in (
+            (self._tables, "schema"),
+            (self._columns, "schema"),
+            (self._api_terms, "api"),
+            (self._business_terms, "term"),
+        ):
+            for term, namespaces in bucket.items():
+                canonical = normalize_schema_term(term, to_singular=True)
+                if not canonical:
+                    continue
+                for ns in sorted(namespaces):
+                    row = (_typed_id(canonical, etype), canonical, ns)
+                    if row not in seen:
+                        seen.add(row)
+                        out.append(row)
+
         for name, _etype, ns in self._data_terms:
             row = (
                 _typed_id(name, _etype),
@@ -500,6 +561,9 @@ class SchemaVocabBuilder:
 
     def api_term_count(self) -> int:
         return len(self._api_terms)
+
+    def business_term_count(self) -> int:
+        return len(self._business_terms)
 
     def data_term_count(self) -> int:
         return len(self._data_terms)

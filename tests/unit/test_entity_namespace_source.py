@@ -568,3 +568,64 @@ class TestSameNameTwoTypesOneNamespace:
             assert len(store.resolve_entity_aliases("john doe", "walmart")) == 2
         finally:
             store.close()
+
+
+class TestGlossaryAndSchemaTermNamespaces:
+    """Glossary terms are reachable, and schema-shaped terms carry a namespace."""
+
+    def test_glossary_terms_reach_the_matcher(self):
+        builder = SchemaVocabBuilder()
+        builder.add_business_terms(["Customer Risk Score"], namespace="risk")
+        matches = builder.build().match("the customer risk score was high")
+        assert [(m.entity_id, m.entity_type) for m in matches] == [
+            ("term:customer_risk_score", "term")
+        ]
+
+    def test_glossary_is_normalised_unlike_static_vocab(self):
+        """Glossary goes through SchemaMatcher: camelCase in prose still matches."""
+        builder = SchemaVocabBuilder()
+        builder.add_business_terms(["Customer Risk Score"])
+        assert builder.build().match("the customerRiskScore field") != []
+
+        verbatim = SchemaVocabBuilder()
+        verbatim.add_entities(["Customer Risk Score"], entity_type="term")
+        assert verbatim.build_data_matcher().match("the customerRiskScore field") == []
+
+    def test_schema_terms_are_namespaced(self):
+        builder = SchemaVocabBuilder()
+        # Columns are matched at line start, so the DDL must be multi-line.
+        builder.add_sql("CREATE TABLE customers (\n    full_name VARCHAR\n);", namespace="retail")
+        tags = builder.namespaced_entities()
+        assert ("schema:customer", "customer", "retail") in tags
+        assert ("schema:full_name", "full name", "retail") in tags
+
+    def test_glossary_terms_are_namespaced(self):
+        builder = SchemaVocabBuilder()
+        builder.add_business_terms(["Wire Transfer"], namespace="ops")
+        assert builder.namespaced_entities() == [("term:wire_transfer", "wire transfer", "ops")]
+
+    def test_unset_namespace_defaults_to_global(self):
+        builder = SchemaVocabBuilder()
+        builder.add_business_terms(["Wire Transfer"])
+        assert builder.namespaced_entities() == [("term:wire_transfer", "wire transfer", "global")]
+
+    def test_one_term_from_two_namespaces_yields_a_tag_each(self):
+        builder = SchemaVocabBuilder()
+        builder.add_business_terms(["Wire Transfer"], namespace="ops")
+        builder.add_business_terms(["Wire Transfer"], namespace="risk")
+        assert builder.namespaced_entities() == [
+            ("term:wire_transfer", "wire transfer", "ops"),
+            ("term:wire_transfer", "wire transfer", "risk"),
+        ]
+
+    def test_glossary_config_entry_is_wired(self):
+        _schema, _data, tags = _build_vocab_matchers(
+            [],
+            use_schema_vocab=False,
+            vocab_entities=[
+                {"type": "glossary", "names": ["Wire Transfer"], "namespace": "ops"},
+            ],
+        )
+        assert ("term:wire_transfer", "wire transfer", "ops") in tags
+        assert _schema is not None
+        assert _schema.match("a wire transfer was sent") != []

@@ -753,10 +753,16 @@ class WeaviateVectorBackend:
         return count
 
     def clear(self) -> None:
+        """Delete all chunks and everything derived from them.
+
+        Leaves the namespace/domain/source registries intact — those describe
+        where content comes from, not the content itself.
+        """
         self._client.collections.delete(self._collection_name)
         self._col = self._init_collection(self._collection_name)
         self._catalog.execute("DELETE FROM embeddings")
         self._catalog.execute("DELETE FROM weaviate_ids")
+        _cascade.clear_derived(self._run, self._table_exists)
 
     # ------------------------------------------------------------------
     # Count / get_all_chunks

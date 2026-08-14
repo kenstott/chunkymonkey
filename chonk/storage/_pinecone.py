@@ -793,7 +793,11 @@ class PineconeVectorBackend:
         return count
 
     def clear(self) -> None:
-        """Delete all chunks from Pinecone and the catalog."""
+        """Delete all chunks and everything derived from them.
+
+        Leaves the namespace/domain/source registries intact — those describe
+        where content comes from, not the content itself.
+        """
         from pinecone import ServerlessSpec
 
         self._pc.delete_index(self._index_name)
@@ -806,6 +810,7 @@ class PineconeVectorBackend:
         self._index = self._pc.Index(self._index_name)
         self._catalog.execute("DELETE FROM embeddings")
         self._catalog.execute("DELETE FROM pinecone_ids")
+        _cascade.clear_derived(self._run, self._table_exists)
 
     # ------------------------------------------------------------------
     # Count / get_all_chunks

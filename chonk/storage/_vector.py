@@ -816,15 +816,10 @@ class DuckDBVectorBackend:
         where content comes from, not the content itself.
         """
         self._conn.execute("DELETE FROM embeddings").fetchall()
-        self._conn.execute("DELETE FROM documents").fetchall()
-        for table in (
-            *_cascade.CHUNK_KEYED_TABLES,
-            "entities",
-            "entity_aliases",
-            "context_graph_edges",
-        ):
-            if self._table_exists(table):
-                self._conn.execute(f"DELETE FROM {table}").fetchall()  # noqa: S608
+        _cascade.clear_derived(
+            lambda sql, params: self._conn.execute(sql, params).fetchall(),
+            self._table_exists,
+        )
         self._fts_dirty = True
 
     # ------------------------------------------------------------------

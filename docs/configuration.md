@@ -180,7 +180,18 @@ sql         = "SELECT product_name FROM products"
 
 `entity_type` is the label assigned to matched spans (e.g. `"customer"`, `"employee"`, `"product"`). It is stored alongside each entity hit in `chunk_entities`.
 
-`namespace` is supported on **every** vocab entry type and is optional; unset means `global`, the same rule `[[source]]` follows. It records which namespace sourced the names — see [Entity aliases](#entity-aliases) for how that is stored and why a name shared by two namespaces stays a single entity.
+A third type, `glossary`, adds business/glossary terms:
+
+```toml
+[[vocab.entities]]
+type      = "glossary"
+names     = ["Customer Risk Score", "wire transfer"]
+namespace = "risk"          # optional — omit for "global"
+```
+
+`glossary` differs from `static` in *how* the terms are matched, not just what they are labelled. Glossary terms run through `SchemaMatcher`: normalised, singularised, and variant-expanded, so `"Customer Risk Score"` also matches `customerRiskScore` and `customer_risk_score` in prose. `static` terms are matched verbatim, which is what you want for literal data values like company names. Glossary entries always carry entity_type `term`, so their IDs are `term:<slug>`.
+
+`namespace` is supported on **every** vocab entry type and is optional; unset means `global`, the same rule `[[source]]` follows. It also applies to schema-derived vocabulary — `add_tables`, `add_sql`, `add_endpoints`, and `add_chunks` all take a `namespace`, so a table name contributed by one division is traceable to it. It records which namespace sourced the names — see [Entity aliases](#entity-aliases) for how that is stored and why a name shared by two namespaces stays a single entity.
 
 ### Library usage
 

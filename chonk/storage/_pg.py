@@ -817,10 +817,17 @@ class PgVectorBackend:
         return len(chunk_ids)
 
     def clear(self) -> None:
-        """Delete all chunks from the table."""
+        """Delete all chunks and everything derived from them.
+
+        Leaves the namespace/domain/source registries intact — those describe
+        where content comes from, not the content itself.
+        """
         self._ensure_connection()
         with self._pgconn.cursor() as cur:
             cur.execute(f"DELETE FROM {self._table}")
+        # _run does not commit; commit once after the cascade so the wipe is
+        # atomic — a half-cleared index is worse than an uncleared one.
+        _cascade.clear_derived(self._run, self._table_exists)
         self._pgconn.commit()
 
     # ------------------------------------------------------------------

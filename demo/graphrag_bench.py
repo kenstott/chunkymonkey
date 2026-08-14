@@ -1043,6 +1043,10 @@ def _build_entity_index_from_store(
                 names = entry.get("names", [])
                 builder.add_entities(names, entity_type=etype, namespace=ns)
                 print(f"  VocabEntities static: {len(names):,} {etype!r} names [ns={ns or 'global'}]")
+            elif entry.get("type") == "glossary":
+                names = entry.get("names", [])
+                builder.add_business_terms(names, namespace=ns)
+                print(f"  VocabEntities glossary: {len(names):,} terms [ns={ns or 'global'}]")
             elif entry.get("type") == "db_query":
                 conn_url = entry["connection"]
                 sql = entry["sql"]
