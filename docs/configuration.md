@@ -428,6 +428,40 @@ store.resolve_entity_ids("customer:mercury")
 Matching is on the name slug, so `"Acme Corp"`, `"acme corp"`, and `"acme_corp"`
 are the same query. An unknown name returns `[]` rather than guessing.
 
+**When the result is empty**, neither method raises — a miss is a normal outcome,
+not an error. But `[]` has two causes, and `explain_entity_lookup()` separates
+them:
+
+```python
+store.explain_entity_lookup("Mercury", entity_type="ghost")
+# EntityLookup(ids=[], name_exists=True, available_types=["customer", "element"],
+#              available_namespaces=["retail"], near_matches=["customer:mercury_systems"], ...)
+
+store.explain_entity_lookup("Mercury", namespaces=["support"])
+# EntityLookup(ids=[], name_exists=True, available_types=["customer", "element"],
+#              available_namespaces=["retail"], ...)   ← wrong namespace, not a miss
+
+store.explain_entity_lookup("Nobody")
+# EntityLookup(ids=[], name_exists=False, available_types=[], available_namespaces=[], ...)
+```
+
+`name_exists=True` with empty `ids` means a *filter* excluded it — a caller
+mistake with an obvious fix, and `available_types` / `available_namespaces` say
+what to ask for instead. Everything empty is a genuine miss. The reported
+alternatives deliberately ignore the filters that were passed.
+
+Both methods take the same `entity_type` and `namespaces` filters, so they always
+answer the same question. `namespaces` is an *evidence* filter — where the entity
+actually appears, the same notion `get_entity_namespace_evidence()` reports — not
+where its vocabulary was declared. `None` applies no restriction; `[]` matches
+nothing, mirroring `search`. `near_matches`
+helps with typos and partial names; it is capped at `NEAR_MATCH_LIMIT` and
+`near_matches_truncated` says when more existed, rather than silently trimming.
+
+An empty result is only trustworthy because nothing upstream can manufacture one:
+a malformed `vocab_entities` entry raises at build time instead of being dropped,
+so "not found" cannot mean "your vocabulary was ignored".
+
 ### Which namespaces are relevant to an entity
 
 Two different questions, two accessors — an entity is shared across namespaces,

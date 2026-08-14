@@ -173,3 +173,151 @@ class TestResolveEntityIds:
             "customer:mercury",
             "element:mercury",
         ]
+
+
+class TestExplainEntityLookup:
+    """An empty result has two causes; the caller should be able to tell them apart."""
+
+    @pytest.fixture()
+    def populated(self, store):
+        for eid, etype in [
+            ("customer:mercury", "customer"),
+            ("element:mercury", "element"),
+            ("customer:mercury_systems", "customer"),
+            ("customer:acme_corp", "customer"),
+        ]:
+            store.vector._conn.execute(
+                "INSERT INTO entities(id, name, display_name, entity_type) VALUES (?, ?, ?, ?)",
+                [eid, eid.split(":")[1].replace("_", " "), eid, etype],
+            )
+        return store
+
+    def test_genuine_miss_reports_nothing_found(self, populated):
+        result = populated.explain_entity_lookup("Nobody")
+        assert result.ids == []
+        assert result.name_exists is False
+        assert result.available_types == []
+        assert result.near_matches == []
+
+    def test_filter_excluded_it_is_distinguishable_from_a_miss(self, populated):
+        """The case an empty list cannot express: present, but not under that type."""
+        result = populated.explain_entity_lookup("Mercury", entity_type="ghost")
+        assert result.ids == []
+        assert result.name_exists is True
+        assert result.available_types == ["customer", "element"]
+
+    def test_hit_agrees_with_resolve_entity_ids(self, populated):
+        for name, etype in [("Mercury", None), ("Mercury", "customer"), ("Nobody", None)]:
+            assert populated.explain_entity_lookup(
+                name, entity_type=etype
+            ).ids == populated.resolve_entity_ids(name, entity_type=etype), (name, etype)
+
+    def test_near_matches_offer_partial_names(self, populated):
+        result = populated.explain_entity_lookup("Mercury", entity_type="customer")
+        assert result.ids == ["customer:mercury"]
+        assert result.near_matches == ["customer:mercury_systems"]
+
+    def test_near_matches_exclude_the_ids_returned(self, populated):
+        result = populated.explain_entity_lookup("Mercury")
+        assert set(result.ids).isdisjoint(result.near_matches)
+
+    def test_truncation_is_reported_not_hidden(self, populated):
+        from chonk.storage._store import NEAR_MATCH_LIMIT
+
+        for i in range(NEAR_MATCH_LIMIT + 3):
+            populated.vector._conn.execute(
+                "INSERT INTO entities(id, name, display_name, entity_type) VALUES (?, ?, ?, ?)",
+                [f"customer:mercury_v{i}", f"mercury v{i}", f"Mercury v{i}", "customer"],
+            )
+        result = populated.explain_entity_lookup("Mercury")
+        assert len(result.near_matches) == NEAR_MATCH_LIMIT
+        assert result.near_matches_truncated is True
+
+    def test_no_truncation_flag_when_all_fit(self, populated):
+        assert populated.explain_entity_lookup("Mercury").near_matches_truncated is False
+
+
+class TestNamespaceFilteredLookup:
+    """Namespace is an evidence filter — where the entity actually appears."""
+
+    @pytest.fixture()
+    def scoped(self, store):
+        ids = _seed(store, [("retail", "a"), ("support", "b")])
+        for eid, etype in [("customer:mercury", "customer"), ("element:mercury", "element")]:
+            store.vector._conn.execute(
+                "INSERT INTO entities(id, name, display_name, entity_type) VALUES (?, ?, ?, ?)",
+                [eid, "mercury", eid, etype],
+            )
+            store.vector._conn.execute(
+                "INSERT INTO chunk_entities(chunk_id, entity_id, frequency, positions_json, "
+                "score, namespace) VALUES (?, ?, 1, '[]', 1.0, 'retail')",
+                [ids[0], eid],
+            )
+        return store
+
+    def test_matching_namespace_returns_the_entities(self, scoped):
+        assert scoped.resolve_entity_ids("Mercury", namespaces=["retail"]) == [
+            "customer:mercury",
+            "element:mercury",
+        ]
+
+    def test_other_namespace_returns_nothing(self, scoped):
+        assert scoped.resolve_entity_ids("Mercury", namespaces=["support"]) == []
+
+    def test_none_applies_no_restriction(self, scoped):
+        assert len(scoped.resolve_entity_ids("Mercury")) == 2
+
+    def test_empty_namespace_list_matches_nothing(self, scoped):
+        assert scoped.resolve_entity_ids("Mercury", namespaces=[]) == []
+
+    def test_type_and_namespace_compose(self, scoped):
+        assert scoped.resolve_entity_ids(
+            "Mercury", entity_type="customer", namespaces=["retail"]
+        ) == ["customer:mercury"]
+
+    def test_explain_distinguishes_wrong_namespace_from_a_miss(self, scoped):
+        wrong_ns = scoped.explain_entity_lookup("Mercury", namespaces=["support"])
+        assert wrong_ns.ids == []
+        assert wrong_ns.name_exists is True
+        assert wrong_ns.available_namespaces == ["retail"]
+
+        miss = scoped.explain_entity_lookup("Nobody", namespaces=["support"])
+        assert miss.ids == []
+        assert miss.name_exists is False
+        assert miss.available_namespaces == []
+
+    def test_explain_alternatives_ignore_the_filters(self, scoped):
+        result = scoped.explain_entity_lookup(
+            "Mercury", entity_type="customer", namespaces=["support"]
+        )
+        assert result.available_types == ["customer", "element"]
+        assert result.available_namespaces == ["retail"]
+
+    def test_explain_ids_agree_with_resolve_under_the_same_filters(self, scoped):
+        for etype, ns in [(None, None), ("customer", ["retail"]), (None, ["support"]), (None, [])]:
+            assert scoped.explain_entity_lookup(
+                "Mercury", entity_type=etype, namespaces=ns
+            ).ids == scoped.resolve_entity_ids("Mercury", entity_type=etype, namespaces=ns), (
+                etype,
+                ns,
+            )
+
+
+class TestLikeWildcardEscaping:
+    """Name slugs contain '_', which is a LIKE single-character wildcard."""
+
+    def test_underscore_does_not_match_an_arbitrary_character(self, store):
+        for eid in ("customer:acme_corp", "customer:acmexcorp"):
+            store.vector._conn.execute(
+                "INSERT INTO entities(id, name, display_name, entity_type) "
+                "VALUES (?, ?, ?, 'customer')",
+                [eid, eid.split(":")[1], eid],
+            )
+        assert store.resolve_entity_ids("Acme Corp") == ["customer:acme_corp"]
+
+    def test_escape_helper_covers_all_three_metacharacters(self):
+        from chonk.storage._store import _like_escape
+
+        assert _like_escape("acme_corp") == r"acme\_corp"
+        assert _like_escape("100%") == r"100\%"
+        assert _like_escape("a\\b") == r"a\\b"
