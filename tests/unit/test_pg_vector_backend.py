@@ -79,6 +79,7 @@ def backend():
         backend_obj._docs_table = "chonk_documents"
         backend_obj._global_attached = False
         backend_obj._pgconn = mock_conn
+        backend_obj._pk_cache = {}
         yield backend_obj, mock_conn, mock_cursor
 
 
@@ -385,3 +386,83 @@ class TestChunkIdStability:
         id1 = PgVectorBackend._generate_chunk_id("doc_a", 0, "hello")
         id2 = PgVectorBackend._generate_chunk_id("doc_b", 0, "hello")
         assert id1 != id2
+
+
+class TestDuckDbSqlTranslation:
+    """INSERT OR IGNORE/REPLACE is DuckDB syntax; Postgres rejects it outright.
+
+    Callers written against the DuckDB API emit it throughout the NER write path,
+    so without translation build_ner cannot write to Postgres at all.
+    """
+
+    def test_placeholders_translated(self):
+        from chonk.storage._pg import _translate_sql
+
+        assert _translate_sql("SELECT * FROM t WHERE a = ? AND b = ?") == (
+            "SELECT * FROM t WHERE a = %s AND b = %s"
+        )
+
+    def test_insert_or_ignore_becomes_on_conflict_do_nothing(self):
+        from chonk.storage._pg import _translate_sql
+
+        out = _translate_sql("INSERT OR IGNORE INTO entities(id, name) VALUES (?,?)")
+        assert out == "INSERT INTO entities (id, name) VALUES (%s,%s) ON CONFLICT DO NOTHING"
+        assert "OR IGNORE" not in out
+
+    def test_insert_or_replace_uses_the_primary_key_as_conflict_target(self):
+        from chonk.storage._pg import _translate_sql
+
+        out = _translate_sql(
+            "INSERT OR REPLACE INTO ner_cache(config_fingerprint, chunk_count) VALUES (?, ?)",
+            lambda _t: ["config_fingerprint"],
+        )
+        assert (
+            "ON CONFLICT (config_fingerprint) DO UPDATE SET chunk_count = EXCLUDED.chunk_count"
+            in out
+        )
+        assert "OR REPLACE" not in out
+
+    def test_composite_primary_key(self):
+        from chonk.storage._pg import _translate_sql
+
+        out = _translate_sql(
+            "INSERT OR REPLACE INTO chunk_entities(chunk_id, entity_id, score) VALUES (?,?,?)",
+            lambda _t: ["chunk_id", "entity_id"],
+        )
+        assert "ON CONFLICT (chunk_id, entity_id) DO UPDATE SET score = EXCLUDED.score" in out
+
+    def test_replace_with_only_key_columns_becomes_do_nothing(self):
+        from chonk.storage._pg import _translate_sql
+
+        out = _translate_sql("INSERT OR REPLACE INTO t(a, b) VALUES (?,?)", lambda _t: ["a", "b"])
+        assert out.endswith("ON CONFLICT (a, b) DO NOTHING")
+
+    def test_replace_without_a_primary_key_raises(self):
+        from chonk.storage._pg import _translate_sql
+
+        with pytest.raises(ValueError, match="no primary key"):
+            _translate_sql("INSERT OR REPLACE INTO t(a, b) VALUES (?,?)", lambda _t: [])
+
+    def test_replace_without_a_lookup_raises(self):
+        from chonk.storage._pg import _translate_sql
+
+        with pytest.raises(ValueError, match="without a primary key lookup"):
+            _translate_sql("INSERT OR REPLACE INTO t(a, b) VALUES (?,?)")
+
+    def test_plain_insert_is_untouched_apart_from_placeholders(self):
+        from chonk.storage._pg import _translate_sql
+
+        out = _translate_sql("INSERT INTO t(a) VALUES (?)")
+        assert out == "INSERT INTO t(a) VALUES (%s)"
+        assert "ON CONFLICT" not in out
+
+    def test_primary_key_lookup_is_cached_per_table(self, backend):
+        backend_obj, _conn, mock_cursor = backend
+        adapter = backend_obj._conn
+        mock_cursor.fetchall.return_value = [("id",)]
+
+        adapter._primary_key("entities")
+        adapter._primary_key("entities")
+
+        pk_queries = [c for c in mock_cursor.execute.call_args_list if "indisprimary" in c[0][0]]
+        assert len(pk_queries) == 1

@@ -225,6 +225,54 @@ class TestStaticParity:
         assert "DELETE FROM documents" in source or "DELETE FROM {dt}" in source, class_name
 
 
+class TestClearCascadesLive:
+    """clear() must empty the derived tables, on every backend that can run here.
+
+    The DuckDB-only and mocked tests missed this: PG, Qdrant, Pinecone, and
+    Weaviate all deleted chunk rows and left `documents` behind, so a wipe
+    followed by re-ingest reported success against an empty index.
+    """
+
+    def _seed(self, backend) -> None:
+        from chonk.models import DocumentChunk
+
+        backend.add_chunks(
+            [DocumentChunk(document_name="doc_a", content="acme corp filed", chunk_index=0)],
+            np.ones((1, 4), dtype="float32"),
+        )
+        backend.register_document("doc_a", "hash_v1", source_uri="file:///a.txt", chunk_count=1)
+
+    def test_clear_drops_the_documents_registry_row(self, backend):
+        self._seed(backend)
+        assert backend.get_document_hash("doc_a") == "hash_v1"
+
+        backend.clear()
+
+        # sync_document() skips an unchanged hash; a surviving row makes the
+        # next ingest a no-op against an emptied index.
+        assert backend.get_document_hash("doc_a") is None
+        assert backend.count() == 0
+
+    def test_clear_then_resync_reindexes(self, backend):
+        """The assertion that catches it: unchanged content must not be skipped."""
+        self._seed(backend)
+        raw = b"acme corp filed"
+        backend.clear()
+
+        result = sync_document(backend, "doc_a", raw)
+        assert result.action != "skipped", "unchanged content skipped after clear()"
+
+    def test_clear_empties_chunk_keyed_tables(self, backend):
+        from chonk.storage._cascade import DERIVED_TABLES
+
+        self._seed(backend)
+        backend.clear()
+        for table in DERIVED_TABLES:
+            if not backend._table_exists(table):
+                continue
+            assert backend._scalar(f"SELECT COUNT(*) FROM {table}", []) == 0, table  # noqa: S608
+
+
 def test_at_least_duckdb_ran():
     """Fail loudly if the parametrized suite degraded to all-skips."""
     assert "duckdb" in _RAN

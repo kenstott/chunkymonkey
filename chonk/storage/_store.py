@@ -1109,6 +1109,37 @@ class Store:
         ).fetchall()
         return [r[0] for r in rows]
 
+    def resolve_entity_ids(self, name: str, entity_type: str | None = None) -> list[str]:
+        """Resolve an unqualified entity name to every matching entity id.
+
+        Callers should not have to know the type prefix. ``"mercury"`` returns
+        every entity of that name — ``["customer:mercury", "element:mercury"]`` —
+        and the caller disambiguates, or uses all of them. Pass *entity_type* to
+        narrow to one. An already-qualified id (``"customer:mercury"``) is
+        returned as-is when it exists, so callers can pass either form.
+
+        Matching is on the name slug, so ``"Acme Corp"``, ``"acme corp"``, and
+        ``"acme_corp"`` are the same query.
+        """
+        from ..ner._vocabulary import _auto_id, split_typed_id
+
+        conn = self.vector._conn
+        given_type, slug = split_typed_id(name)
+        if given_type:
+            # Already qualified — confirm it exists rather than guessing.
+            rows = conn.execute("SELECT id FROM entities WHERE id = ?", [name]).fetchall()
+            return [r[0] for r in rows]
+
+        slug = _auto_id(slug)
+        rows = conn.execute(
+            "SELECT id FROM entities WHERE id LIKE ? ORDER BY id", [f"%:{slug}"]
+        ).fetchall()
+        ids = [r[0] for r in rows]
+        if entity_type is not None:
+            prefix = f"{_auto_id(entity_type)}:"
+            ids = [i for i in ids if i.startswith(prefix)]
+        return ids
+
     def get_entity_namespace_evidence(self, entity_id: str) -> list[NamespaceEvidence]:
         """Return the namespaces whose documents actually mention *entity_id*.
 

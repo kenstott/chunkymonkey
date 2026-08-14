@@ -181,9 +181,19 @@ def build_namespace_async(
         finally:
             store.close()
 
-    t = threading.Thread(target=_run, daemon=True)
+    def _guarded() -> None:
+        # The thread's exception is otherwise invisible: on_error defaults to a
+        # no-op, so a caller that did not pass one sees a normal return.
+        try:
+            _run()
+        except BaseException as exc:
+            handle.error = exc
+            raise
+
+    t = threading.Thread(target=_guarded, daemon=True)
+    handle = IndexHandle(t)
     t.start()
-    return IndexHandle(t)
+    return handle
 
 
 class NamespaceRefresher:

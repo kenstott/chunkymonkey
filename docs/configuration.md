@@ -410,6 +410,24 @@ Two things to know:
 - Types come straight off the entity ID (`customer:john_doe` → `customer`), so
   there is no join and no second source of truth.
 
+### Looking up an entity without its type
+
+Entity IDs are type-qualified, but callers should not have to know the prefix:
+
+```python
+store.resolve_entity_ids("Mercury")
+# ["customer:mercury", "element:mercury"]   ← every type, caller disambiguates
+
+store.resolve_entity_ids("Mercury", entity_type="customer")
+# ["customer:mercury"]
+
+store.resolve_entity_ids("customer:mercury")
+# ["customer:mercury"]                      ← already qualified, passes through
+```
+
+Matching is on the name slug, so `"Acme Corp"`, `"acme corp"`, and `"acme_corp"`
+are the same query. An unknown name returns `[]` rather than guessing.
+
 ### Which namespaces are relevant to an entity
 
 Two different questions, two accessors — an entity is shared across namespaces,

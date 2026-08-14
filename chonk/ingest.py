@@ -534,6 +534,15 @@ class Index:
         from .lifecycle import build_namespace_async
 
         db_path, dsn = self._rebuild_target()
+        if dsn is not None and self._index_cfg.community:
+            # build_community() reads a DuckDB file directly, so it cannot run
+            # against Postgres. Raise here rather than inside a worker thread,
+            # where the default no-op on_error would swallow it.
+            raise NotImplementedError(
+                "rebuild() cannot build the community index on the PostgreSQL "
+                "backend: build_community() reads a DuckDB file directly. Set "
+                "community=False in the index config to rebuild the rest."
+            )
         namespaces = [namespace_id] if namespace_id else list(self._domain_map.keys())
         handles = []
         for ns in namespaces:
@@ -556,6 +565,9 @@ class Index:
         if not async_:
             for h in handles:
                 h.join()
+                # A synchronous rebuild that swallowed its failure would report
+                # success against an unbuilt index.
+                h.raise_if_failed()
             self._invalidate_search()
         return handles
 

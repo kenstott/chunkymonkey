@@ -201,6 +201,10 @@ pytest tests/unit -q -p no:randomly --maxfail=50
 ruff check chonk/ && mypy chonk/storage chonk/ner chonk/graph
 ```
 
-The suite must reach `1389 passed` with the Postgres lane enabled — 12 contract points per
+The suite must be green with the Postgres lane enabled — the contract points run per
 backend, none of them skipped when the DSN is set. A green run with the DSN unset does not
 verify either defect.
+
+Current: `1606 passed, 47 skipped` for the full suite with `CHONK_TEST_PG_DSN` set (the
+count moves with every added test, so treat it as a floor, not a target). Remaining skips
+are Qdrant, Pinecone, and Weaviate, which still have no live service here.

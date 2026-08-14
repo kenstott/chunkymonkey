@@ -122,3 +122,54 @@ class TestDeclarationVsEvidence:
             "retail",
             "support",
         ]
+
+
+class TestResolveEntityIds:
+    """A caller should not have to know the type prefix."""
+
+    @pytest.fixture()
+    def populated(self, store):
+        for eid, etype in [
+            ("customer:mercury", "customer"),
+            ("element:mercury", "element"),
+            ("customer:acme_corp", "customer"),
+        ]:
+            store.vector._conn.execute(
+                "INSERT INTO entities(id, name, display_name, entity_type) VALUES (?, ?, ?, ?)",
+                [eid, eid.split(":")[1].replace("_", " "), eid, etype],
+            )
+        return store
+
+    def test_unqualified_name_returns_every_type(self, populated):
+        assert populated.resolve_entity_ids("Mercury") == [
+            "customer:mercury",
+            "element:mercury",
+        ]
+
+    def test_entity_type_narrows(self, populated):
+        assert populated.resolve_entity_ids("Mercury", entity_type="customer") == [
+            "customer:mercury"
+        ]
+
+    def test_qualified_id_passes_through(self, populated):
+        assert populated.resolve_entity_ids("element:mercury") == ["element:mercury"]
+
+    def test_qualified_id_that_does_not_exist_returns_empty(self, populated):
+        assert populated.resolve_entity_ids("ghost:mercury") == []
+
+    def test_surface_variants_normalise_to_the_same_slug(self, populated):
+        for surface in ("Acme Corp", "acme corp", "acme_corp", "ACME  CORP"):
+            assert populated.resolve_entity_ids(surface) == ["customer:acme_corp"], surface
+
+    def test_unknown_name_returns_empty(self, populated):
+        assert populated.resolve_entity_ids("nobody") == []
+
+    def test_does_not_match_a_name_that_merely_ends_with_the_slug(self, populated):
+        populated.vector._conn.execute(
+            "INSERT INTO entities(id, name, display_name, entity_type) "
+            "VALUES ('customer:big_mercury', 'big mercury', 'Big Mercury', 'customer')"
+        )
+        assert populated.resolve_entity_ids("Mercury") == [
+            "customer:mercury",
+            "element:mercury",
+        ]

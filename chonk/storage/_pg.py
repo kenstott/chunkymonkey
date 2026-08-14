@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -23,6 +25,8 @@ if TYPE_CHECKING:
     from ..models import DocumentChunk
 
 from . import _cascade
+
+PkLookup = Callable[[str], list[str]]
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +58,57 @@ def _deserialize_section(value: Any) -> list[str]:  # noqa: ANN401
     return [value]
 
 
-def _translate_sql(sql: str) -> str:
-    """Translate DuckDB ``?`` placeholders to psycopg2 ``%s``."""
+# "INSERT OR IGNORE|REPLACE INTO tbl (cols)" — DuckDB/SQLite upsert syntax that
+# Postgres rejects outright. Callers written against the DuckDB API emit it on the
+# NER write path, so the adapter has to translate rather than pass it through.
+_INSERT_OR_RE = re.compile(
+    r"^\s*INSERT\s+OR\s+(IGNORE|REPLACE)\s+INTO\s+(\w+)\s*\(([^)]*)\)",
+    re.IGNORECASE,
+)
+
+
+def _translate_sql(sql: str, pk_lookup: PkLookup | None = None) -> str:
+    """Translate DuckDB SQL to its PostgreSQL equivalent.
+
+    Handles ``?`` placeholders and ``INSERT OR IGNORE`` / ``INSERT OR REPLACE``.
+
+    ``INSERT OR IGNORE`` becomes a bare ``ON CONFLICT DO NOTHING``, which
+    Postgres accepts without a conflict target. ``INSERT OR REPLACE`` needs one,
+    so the table's primary key is looked up and every non-key column is assigned
+    from ``EXCLUDED``.
+
+    Raises:
+        ValueError: an ``INSERT OR REPLACE`` targets a table with no primary key,
+            which has no deterministic Postgres equivalent.
+    """
+    match = _INSERT_OR_RE.match(sql)
+    if match is not None:
+        kind, table, col_text = match.group(1).upper(), match.group(2), match.group(3)
+        body = sql[: match.start()] + f"INSERT INTO {table} ({col_text})" + sql[match.end() :]
+        if kind == "IGNORE":
+            suffix = " ON CONFLICT DO NOTHING"
+        else:
+            if pk_lookup is None:
+                raise ValueError(
+                    f"cannot translate INSERT OR REPLACE on {table!r} without a primary "
+                    f"key lookup — the Postgres equivalent needs a conflict target"
+                )
+            pk_cols = pk_lookup(table)
+            if not pk_cols:
+                raise ValueError(
+                    f"cannot translate INSERT OR REPLACE on {table!r}: the table has no "
+                    f"primary key, so there is no conflict target to update on"
+                )
+            cols = [c.strip().strip('"') for c in col_text.split(",")]
+            updates = [c for c in cols if c not in pk_cols]
+            set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in updates)
+            conflict = ", ".join(pk_cols)
+            suffix = (
+                f" ON CONFLICT ({conflict}) DO UPDATE SET {set_clause}"
+                if updates
+                else f" ON CONFLICT ({conflict}) DO NOTHING"
+            )
+        sql = body.rstrip().rstrip(";") + suffix
     return sql.replace("?", "%s")
 
 
@@ -94,11 +147,32 @@ class _PsycopgAdapter:
     Each ``execute()`` call auto-commits (matches DuckDB's default behaviour).
     """
 
-    def __init__(self, pgconn: Any) -> None:  # noqa: ANN401
+    def __init__(self, pgconn: Any, pk_cache: dict[str, list[str]] | None = None) -> None:  # noqa: ANN401
         self._pgconn = pgconn
+        # Shared with the backend so the catalog lookup happens once per table,
+        # not once per statement — the NER write path is per-row.
+        self._pk_cache = pk_cache if pk_cache is not None else {}
+
+    def _primary_key(self, table: str) -> list[str]:
+        """Return the primary-key column names for *table*, cached."""
+        if table not in self._pk_cache:
+            with self._pgconn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT a.attname
+                    FROM pg_index i
+                    JOIN pg_attribute a
+                      ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                    WHERE i.indrelid = to_regclass(%s) AND i.indisprimary
+                    ORDER BY a.attnum
+                    """,
+                    [table],
+                )
+                self._pk_cache[table] = [r[0] for r in cur.fetchall()]
+        return self._pk_cache[table]
 
     def execute(self, sql: str, params: list[Any] | None = None) -> _PgResult:
-        pg_sql = _translate_sql(sql)
+        pg_sql = _translate_sql(sql, self._primary_key)
         param_list = list(params) if params is not None else []
         with self._pgconn.cursor() as cur:
             cur.execute(pg_sql, param_list)
@@ -107,7 +181,7 @@ class _PsycopgAdapter:
         return _PgResult(rows)
 
     def executemany(self, sql: str, params_list: list[list[Any]]) -> None:
-        pg_sql = _translate_sql(sql)
+        pg_sql = _translate_sql(sql, self._primary_key)
         with self._pgconn.cursor() as cur:
             for row in params_list:
                 cur.execute(pg_sql, list(row))
@@ -137,6 +211,7 @@ class PgVectorBackend:
         self._pgconn = self._connect()
         self._global_attached = False
         self._fts_dirty = False  # tsvector index is live — no manual rebuild needed
+        self._pk_cache: dict[str, list[str]] = {}
         self._init_schema()
 
     # ------------------------------------------------------------------
@@ -150,7 +225,7 @@ class PgVectorBackend:
         Allows Store catalog methods written for DuckDB to work
         transparently with the PG backend via placeholder translation.
         """
-        return _PsycopgAdapter(self._pgconn)
+        return _PsycopgAdapter(self._pgconn, self._pk_cache)
 
     # ------------------------------------------------------------------
     # Connection
