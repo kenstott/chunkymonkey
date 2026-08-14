@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -17,7 +18,9 @@ from typing import Any
 from ._types import EmbedModel
 from .community import build_community
 from .indexer import IndexHandle
-from .storage._store import Store
+from .storage._store import GLOBAL_NAMESPACE, Store
+
+_log = logging.getLogger(__name__)
 
 
 def build_namespace_async(
@@ -35,6 +38,7 @@ def build_namespace_async(
     community_alpha: float = 0.2,
     community_sim_threshold: float = 0.6,
     embed_batch_size: int = 256,
+    dsn: str | None = None,
 ) -> IndexHandle:
     """Build the full index pipeline for *namespace_id* in a background thread.
 
@@ -58,14 +62,26 @@ def build_namespace_async(
         community_alpha: Breadcrumb weight for community graph.
         community_sim_threshold: Cosine similarity threshold for community edges.
         embed_batch_size: Embedding batch size.
+        dsn: PostgreSQL DSN. When set, the build runs against the PG backend and
+            ``db_path`` is ignored. Community building is DuckDB-only, so
+            ``run_community`` must be False when ``dsn`` is set.
+
+    Raises:
+        NotImplementedError: dsn is set together with run_community=True.
     """
+    if dsn is not None and run_community:
+        raise NotImplementedError(
+            "build_namespace_async(dsn=...) cannot build the community index: "
+            "build_community() reads a DuckDB file directly. Pass run_community=False."
+        )
+
     _on_progress = on_progress or (lambda *_: None)
     _on_complete = on_complete or (lambda *_: None)
     _on_error = on_error or (lambda *_: None)
 
     def _run() -> None:
         db_path_ = Path(db_path)
-        store = Store(db_path_, read_only=False)
+        store = Store(dsn=dsn) if dsn is not None else Store(db_path_, read_only=False)
 
         try:
             if not force and store.namespace_cache_valid(namespace_id):
@@ -178,22 +194,39 @@ class NamespaceRefresher:
     Concurrent builds across different namespaces run in parallel (separate DBs).
 
     Args:
-        db_path_fn: Callable mapping namespace_id to its DB file path.
+        db_path_fn: Callable mapping namespace_id to its DB file path. Required
+            for the DuckDB backend; ignored (and may be None) when ``dsn`` is set.
         embed_model: SentenceTransformer model name or instance.
         interval_seconds: How often to check all namespaces (default 3600).
         on_rebuild: Called with namespace_id when a rebuild is triggered.
+        dsn: PostgreSQL DSN. When set, all namespaces live in one PG database and
+            enumeration/validation run against it instead of per-namespace files.
         build_kwargs: Extra kwargs forwarded to build_namespace_async.
+
+    Raises:
+        ValueError: neither db_path_fn nor dsn was supplied.
+        NotImplementedError: dsn is set without run_community=False.
     """
 
     def __init__(
         self,
-        db_path_fn: Callable[[str], str | Path],
+        db_path_fn: Callable[[str], str | Path] | None,
         embed_model: EmbedModel,
         interval_seconds: int = 3600,
         on_rebuild: Callable[[str], None] | None = None,
+        dsn: str | None = None,
         **build_kwargs: Any,  # noqa: ANN401
     ) -> None:
+        if db_path_fn is None and dsn is None:
+            raise ValueError("NamespaceRefresher requires either db_path_fn or dsn")
+        if dsn is not None and build_kwargs.get("run_community", True):
+            # Fail at construction rather than inside the background loop thread.
+            raise NotImplementedError(
+                "NamespaceRefresher(dsn=...) cannot rebuild the community index: "
+                "build_community() reads a DuckDB file directly. Pass run_community=False."
+            )
         self._db_path_fn = db_path_fn
+        self._dsn = dsn
         self._embed_model = embed_model
         self._interval = interval_seconds
         self._on_rebuild = on_rebuild or (lambda _: None)
@@ -219,21 +252,25 @@ class NamespaceRefresher:
         while not self._stop.wait(self._interval):
             self._check_all()
 
+    def _open_store(self, namespace_id: str) -> Store:
+        """Open a read-only Store for *namespace_id* on the configured backend."""
+        if self._dsn is not None:
+            return Store(dsn=self._dsn)
+        assert self._db_path_fn is not None  # guaranteed by __init__
+        return Store(self._db_path_fn(namespace_id), read_only=True)
+
     def _check_all(self) -> None:
+        # Namespace enumeration goes through the Store abstraction so it works on
+        # every backend. On DuckDB the catalog lives in the "global" namespace file;
+        # on PG every namespace shares one database.
         try:
-            global_db_path = self._db_path_fn("global")
+            store = self._open_store(GLOBAL_NAMESPACE)
+            try:
+                namespace_ids = store.list_namespaces()
+            finally:
+                store.close()
         except Exception:
-            return
-
-        try:
-            import duckdb
-
-            con = duckdb.connect(str(global_db_path), read_only=True)
-            namespace_ids = [
-                r[0] for r in con.execute("SELECT namespace_id FROM namespaces").fetchall()
-            ]
-            con.close()
-        except Exception:
+            _log.exception("NamespaceRefresher: namespace enumeration failed; skipping this pass")
             return
 
         for ns_id in namespace_ids:
@@ -243,19 +280,24 @@ class NamespaceRefresher:
                     continue
 
             try:
-                db_path = self._db_path_fn(ns_id)
-                store = Store(db_path, read_only=True)
-                valid = store.namespace_cache_valid(ns_id)
-                store.close()
+                store = self._open_store(ns_id)
+                try:
+                    valid = store.namespace_cache_valid(ns_id)
+                finally:
+                    store.close()
             except Exception:
+                _log.exception(
+                    "NamespaceRefresher: freshness check failed for namespace %r; skipping", ns_id
+                )
                 continue
 
             if not valid:
                 self._on_rebuild(ns_id)
                 handle = build_namespace_async(
                     ns_id,
-                    self._db_path_fn(ns_id),
+                    "" if self._db_path_fn is None else self._db_path_fn(ns_id),
                     self._embed_model,
+                    dsn=self._dsn,
                     **self._build_kwargs,
                 )
                 with self._lock:

@@ -56,6 +56,11 @@ class VocabularyMatcher:
             ``id``, ``name``, ``display_name``, ``type``, ``aliases``.
         match_mode: ``"exact"`` or ``"case_insensitive"`` (default).
         min_entity_length: Minimum character length for an entity to be matched.
+        normalize_separators: Collapse runs of whitespace and connector
+            punctuation (``-``, ``_``, ``/``) to a single space on both the
+            vocabulary surfaces and the searched text, so ``"Acme-Corp"`` and
+            ``"Acme  Corp"`` match a surface stored as ``"Acme Corp"``.
+            Reported spans are always offsets into the original text.
     """
 
     def __init__(
@@ -63,11 +68,16 @@ class VocabularyMatcher:
         entities: list[dict[str, Any]],
         match_mode: str = "case_insensitive",
         min_entity_length: int = 2,
+        normalize_separators: bool = True,
     ) -> None:
         self._match_mode = match_mode
         self._min_len = min_entity_length
-        # Map from normalised surface form -> (entity_id, display_name, type)
-        self._lookup: dict[str, tuple[str, str, str]] = {}
+        self._normalize = normalize_separators
+        # Map from normalised surface form -> [(entity_id, display_name, type), ...].
+        # A surface can name more than one entity: "John Doe" may be both
+        # customer:john_doe and employee:john_doe. Every mapping is kept, so a
+        # mention counts as evidence for each.
+        self._lookup: dict[str, list[tuple[str, str, str]]] = {}
         # Track canonical entity metadata
         self._entities: dict[str, dict[str, Any]] = {}
 
@@ -85,7 +95,14 @@ class VocabularyMatcher:
                 if len(surface) < self._min_len:
                     continue
                 key = surface if match_mode == "exact" else surface.lower()
-                self._lookup[key] = (eid, ent["display_name"], dtype)
+                if self._normalize:
+                    key = normalize_surface(key)
+                    if not key:
+                        continue
+                mapping = (eid, ent["display_name"], dtype)
+                bucket = self._lookup.setdefault(key, [])
+                if mapping not in bucket:
+                    bucket.append(mapping)
 
     # ------------------------------------------------------------------
     # Public API
@@ -98,10 +115,17 @@ class VocabularyMatcher:
         frequency and positions across all surface forms.
         """
         check_text = text if self._match_mode == "exact" else text.lower()
+        # Scan normalised text so separator variants ("Acme-Corp", "Acme  Corp")
+        # hit the same surface; index_map carries spans back to the original
+        # offsets the caller sees.
+        if self._normalize:
+            check_text, index_map = normalize_separators(check_text)
+        else:
+            index_map = list(range(len(check_text)))
         # entity_id -> {positions: list, display_name, type}
         found: dict[str, dict[str, Any]] = {}
 
-        for surface, (eid, display_name, etype) in self._lookup.items():
+        for surface, mappings in self._lookup.items():
             start = 0
             while True:
                 pos = check_text.find(surface, start)
@@ -112,13 +136,16 @@ class VocabularyMatcher:
                 after_pos = pos + len(surface)
                 after_ok = after_pos >= len(check_text) or not check_text[after_pos].isalnum()
                 if before_ok and after_ok:
-                    if eid not in found:
-                        found[eid] = {
-                            "spans": [],
-                            "display_name": display_name,
-                            "type": etype,
-                        }
-                    found[eid]["spans"].append((pos, pos + len(surface)))
+                    span_start = index_map[pos]
+                    span_end = index_map[after_pos - 1] + 1
+                    for eid, display_name, etype in mappings:
+                        if eid not in found:
+                            found[eid] = {
+                                "spans": [],
+                                "display_name": display_name,
+                                "type": etype,
+                            }
+                        found[eid]["spans"].append((span_start, span_end))
                 start = pos + 1
 
         results = []
@@ -165,14 +192,14 @@ class VocabularyMatcher:
             raw = json.loads(text)
             entities = []
             for item in raw:
+                item_type = item.get("type", item.get("entity_type", "concept"))
+                item_name = item.get("name", item.get("display_name", ""))
                 entities.append(
                     {
-                        "id": item.get(
-                            "id", _auto_id(item.get("name", item.get("display_name", "")))
-                        ),
-                        "name": item.get("name", item.get("display_name", "")).lower(),
+                        "id": item.get("id", _typed_id(item_name, item_type)),
+                        "name": item_name.lower(),
                         "display_name": item.get("display_name", item.get("name", "")),
-                        "type": item.get("type", item.get("entity_type", "concept")),
+                        "type": item_type,
                         "aliases": item.get("aliases", []),
                     }
                 )
@@ -185,7 +212,7 @@ class VocabularyMatcher:
                     continue
                 entities.append(
                     {
-                        "id": _auto_id(line),
+                        "id": _typed_id(line, "concept"),
                         "name": line.lower(),
                         "display_name": line,
                         "type": "concept",
@@ -195,6 +222,75 @@ class VocabularyMatcher:
         return cls(entities, match_mode=match_mode, min_entity_length=min_entity_length)
 
 
+# Characters that separate the words of a name without being part of it.
+# Sentence punctuation (. , ; : ! ?) is deliberately excluded: collapsing it
+# would make "Acme Corp" match across the sentence break in "…Acme. Corp…".
+_SEPARATORS = frozenset(" \t\n\r\f\v-‐‑‒–—_/\\| ")
+
+
+def normalize_separators(text: str) -> tuple[str, list[int]]:
+    """Collapse every run of separator characters to a single space.
+
+    Vocabulary matching is a literal substring scan, so ``"Acme  Corp"``,
+    ``"Acme-Corp"``, and ``"Acme\\nCorp"`` would each miss a surface stored as
+    ``"Acme Corp"``. Normalising both sides makes them match.
+
+    Returns:
+        ``(normalized_text, index_map)`` where ``index_map[i]`` is the offset in
+        *text* of ``normalized_text[i]``, so match spans map back to offsets in
+        the original string.
+    """
+    out: list[str] = []
+    index_map: list[int] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] in _SEPARATORS:
+            run_start = i
+            while i < n and text[i] in _SEPARATORS:
+                i += 1
+            out.append(" ")
+            index_map.append(run_start)
+        else:
+            out.append(text[i])
+            index_map.append(i)
+            i += 1
+    return "".join(out), index_map
+
+
+def normalize_surface(surface: str) -> str:
+    """Normalise a vocabulary surface form the same way :func:`normalize_separators` does."""
+    normalized, _ = normalize_separators(surface)
+    return normalized.strip()
+
+
 def _auto_id(display_name: str) -> str:
-    """Generate a stable entity ID from a display name."""
+    """Generate a stable name slug from a display name.
+
+    Not an entity ID on its own — see :func:`_typed_id`. Every non-alphanumeric
+    character collapses to ``_``, so the result can never contain ``:``.
+    """
     return re.sub(r"[^a-z0-9]+", "_", display_name.lower()).strip("_")
+
+
+def _typed_id(display_name: str, entity_type: str) -> str:
+    """Generate a stable entity ID from a display name and its entity type.
+
+    IDs are ``"{entity_type}:{name_slug}"``. The type is part of the identity so
+    that ``customer:mercury`` and ``element:mercury`` are distinct entities.
+    ``_auto_id`` collapses every non-alphanumeric character to ``_``, so ``:``
+    is an unambiguous separator: :func:`split_typed_id` always recovers both
+    halves.
+    """
+    return f"{_auto_id(entity_type)}:{_auto_id(display_name)}"
+
+
+def split_typed_id(entity_id: str) -> tuple[str, str]:
+    """Split ``"{type}:{name_slug}"`` into ``(type, name_slug)``.
+
+    An ID with no ``:`` predates typed IDs and yields ``("", entity_id)``.
+    """
+    entity_type, sep, name_slug = entity_id.partition(":")
+    if not sep:
+        return "", entity_id
+    return entity_type, name_slug

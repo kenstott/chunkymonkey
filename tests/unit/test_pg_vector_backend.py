@@ -245,6 +245,35 @@ class TestSearch:
         _, _, chunk = backend_obj.search(_make_embeddings(1)[0], limit=1)[0]
         assert chunk.source_detail == {"row_start": 2}
 
+    def test_hybrid_binds_query_text_as_parameter(self, backend):
+        """query_text must never be interpolated into the SQL text."""
+        backend_obj, _conn, mock_cursor = backend
+        mock_cursor.fetchall.return_value = []
+        payload = "'); DROP TABLE chonk_embeddings; --"
+
+        backend_obj.search(_make_embeddings(1)[0], limit=2, query_text=payload)
+
+        bm25_calls = [c for c in mock_cursor.execute.call_args_list if "plainto_tsquery" in c[0][0]]
+        assert bm25_calls, "no BM25 statement executed"
+        for call in bm25_calls:
+            sql, params = call[0]
+            assert payload not in sql
+            assert sql.count("plainto_tsquery('english', %s)") == 2
+            assert params.count(payload) == 2
+
+    def test_hybrid_param_order_matches_placeholders(self, backend):
+        """Filter params must sit between the ts_rank and WHERE query_text binds."""
+        backend_obj, _conn, mock_cursor = backend
+        mock_cursor.fetchall.return_value = []
+
+        backend_obj.search(_make_embeddings(1)[0], limit=2, query_text="cats", namespaces=["ns1"])
+
+        bm25_calls = [c for c in mock_cursor.execute.call_args_list if "plainto_tsquery" in c[0][0]]
+        sql, params = bm25_calls[0][0]
+        # Placeholder order in the statement text: ts_rank, namespace filter, WHERE, LIMIT
+        assert sql.index("ts_rank") < sql.index("namespace = ANY(%s)")
+        assert params == ["cats", ["ns1"], "cats", 8]  # candidate_limit = limit * 4
+
 
 class TestDeleteAndClear:
     def test_delete_by_document_returns_count(self, backend):

@@ -16,7 +16,7 @@ from ._schema import SchemaMatcher, normalize_schema_term
 from ._schema_vocab import SchemaVocabBuilder
 from ._spacy import SpacyMatcher
 from ._spacy_labels import ALL_SPACY_LABELS, SpacyLabel
-from ._vocabulary import EntityMatch, VocabularyMatcher
+from ._vocabulary import EntityMatch, VocabularyMatcher, normalize_separators, normalize_surface
 
 __all__ = [
     "build_ner",
@@ -29,6 +29,8 @@ __all__ = [
     "merge_matches",
     "SchemaMatcher",
     "normalize_schema_term",
+    "normalize_separators",
+    "normalize_surface",
     "SchemaVocabBuilder",
     "NerPipeline",
     "EntityNormalizer",

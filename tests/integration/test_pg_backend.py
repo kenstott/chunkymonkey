@@ -248,6 +248,44 @@ class TestHybridSearch:
         assert len(hybrid_results) >= 1
         assert set(hybrid_ids).issubset(set(vec_ids) | set(hybrid_ids))
 
+    def test_hybrid_query_text_is_not_sql(self, backend: PgVectorBackend) -> None:
+        """A quote-terminating payload in query_text must not execute as SQL."""
+        chunks = [_chunk("doc", 0, "harmless content about ships")]
+        backend.add_chunks(chunks, _embeddings(1))
+
+        payload = f"'); DROP TABLE {backend._table}; --"
+        backend.search(_embeddings(1)[0], limit=5, query_text=payload)
+
+        with backend._pgconn.cursor() as cur:
+            cur.execute("SELECT to_regclass(%s)", [backend._table])
+            row = cur.fetchone()
+        assert row is not None
+        assert row[0] is not None, "embeddings table was dropped — SQL injection succeeded"
+
+    def test_hybrid_query_text_backslash_nonstandard_strings(
+        self, backend: PgVectorBackend
+    ) -> None:
+        """Backslash payload must be inert even with standard_conforming_strings off."""
+        chunks = [_chunk("doc", 0, "harmless content about ships")]
+        backend.add_chunks(chunks, _embeddings(1))
+
+        with backend._pgconn.cursor() as cur:
+            cur.execute("SET standard_conforming_strings = off")
+        backend._pgconn.commit()
+        try:
+            payload = f"\\'); DROP TABLE {backend._table}; --"
+            backend.search(_embeddings(1)[0], limit=5, query_text=payload)
+
+            with backend._pgconn.cursor() as cur:
+                cur.execute("SELECT to_regclass(%s)", [backend._table])
+                row = cur.fetchone()
+            assert row is not None
+            assert row[0] is not None, "embeddings table was dropped — SQL injection succeeded"
+        finally:
+            with backend._pgconn.cursor() as cur:
+                cur.execute("SET standard_conforming_strings = on")
+            backend._pgconn.commit()
+
 
 # ---------------------------------------------------------------------------
 # Document registry
@@ -881,3 +919,215 @@ class TestWorkerCoordinatorTandem:
         assert not worker_exc, f"Worker raised: {worker_exc[0]}"
         assert self._all_done(pg_dsn), "Queue did not drain after unpause"
         assert backend.count() >= 1
+
+
+# ---------------------------------------------------------------------------
+# chunk_type exclusion + entity_types filtering (PG array paths)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def filter_backend(pg_dsn: str) -> Generator[PgVectorBackend, None, None]:
+    """Own table: other tests in this module create `embeddings` at a different dim."""
+    b = PgVectorBackend(pg_dsn, embedding_dim=DIM, table="filter_embeddings")
+    b.clear()
+    yield b
+    with b._pgconn.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS filter_embeddings")
+    b._pgconn.commit()
+    b.close()
+
+
+def _typed_chunk(doc: str, content: str, chunk_type: str) -> DocumentChunk:
+    return DocumentChunk(
+        document_name=doc,
+        content=content,
+        chunk_index=0,
+        section=[],
+        chunk_type=chunk_type,
+    )
+
+
+class TestExcludeChunkTypes:
+    def _seed(self, filter_backend: PgVectorBackend) -> None:
+        chunks = [
+            _typed_chunk("doc_a", "quarterly revenue grew", "document"),
+            _typed_chunk("__entity__customer:acme", "acme corp. a customer", "entity"),
+            _typed_chunk("__community__1", "summary of the revenue cluster", "community_summary"),
+        ]
+        filter_backend.add_chunks(chunks, _embeddings(3))
+
+    def test_bare_search_includes_synthetic_rows(self, filter_backend: PgVectorBackend) -> None:
+        self._seed(filter_backend)
+        hits = filter_backend.search(_embeddings(1)[0], limit=10)
+        assert {c.chunk_type for _, _, c in hits} == {"document", "entity", "community_summary"}
+
+    def test_exclusion_drops_named_types(self, filter_backend: PgVectorBackend) -> None:
+        from chonk.storage._schema import SYNTHETIC_CHUNK_TYPES
+
+        self._seed(filter_backend)
+        hits = filter_backend.search(
+            _embeddings(1)[0], limit=10, exclude_chunk_types=SYNTHETIC_CHUNK_TYPES
+        )
+        assert {c.chunk_type for _, _, c in hits} == {"document"}
+
+    def test_exclusion_applies_to_hybrid_lane(self, filter_backend: PgVectorBackend) -> None:
+        from chonk.storage._schema import SYNTHETIC_CHUNK_TYPES
+
+        self._seed(filter_backend)
+        hits = filter_backend.search(
+            _embeddings(1)[0],
+            limit=10,
+            query_text="revenue",
+            exclude_chunk_types=SYNTHETIC_CHUNK_TYPES,
+        )
+        assert all(c.chunk_type == "document" for _, _, c in hits)
+
+
+class TestEntityTypesFilter:
+    def _seed(self, filter_backend: PgVectorBackend) -> list[str]:
+        filter_backend.add_chunks(
+            [_chunk("doc_a", 0, "john doe bought a drill"), _chunk("doc_b", 0, "acme corp filed")],
+            _embeddings(2),
+        )
+        with filter_backend._pgconn.cursor() as cur:
+            cur.execute(
+                f"SELECT chunk_id FROM {filter_backend._table} ORDER BY document_name"  # noqa: S608
+            )
+            return [r[0] for r in cur.fetchall()]
+
+    def test_column_exists_as_text_array(self, filter_backend: PgVectorBackend) -> None:
+        with filter_backend._pgconn.cursor() as cur:
+            cur.execute(
+                "SELECT data_type, udt_name FROM information_schema.columns "
+                "WHERE table_name = %s AND column_name = 'entity_types'",
+                [filter_backend._table],
+            )
+            row = cur.fetchone()
+        assert row is not None
+        assert row[0] == "ARRAY"
+        assert row[1] == "_text"
+
+    def test_written_types_are_filterable(self, filter_backend: PgVectorBackend) -> None:
+        ids = self._seed(filter_backend)
+        assert (
+            filter_backend.set_chunk_entity_types(
+                {ids[0]: ["customer", "employee"], ids[1]: ["org"]}
+            )
+            == 2
+        )
+
+        q = _embeddings(1)[0]
+        assert [
+            c.document_name
+            for _, _, c in filter_backend.search(q, limit=10, entity_types=["customer"])
+        ] == ["doc_a"]
+        assert [
+            c.document_name for _, _, c in filter_backend.search(q, limit=10, entity_types=["org"])
+        ] == ["doc_b"]
+
+    def test_any_overlap_semantics(self, filter_backend: PgVectorBackend) -> None:
+        ids = self._seed(filter_backend)
+        filter_backend.set_chunk_entity_types({ids[0]: ["customer"], ids[1]: ["org"]})
+        hits = filter_backend.search(_embeddings(1)[0], limit=10, entity_types=["customer", "org"])
+        assert sorted(c.document_name for _, _, c in hits) == ["doc_a", "doc_b"]
+
+    def test_chunks_without_ner_match_nothing(self, filter_backend: PgVectorBackend) -> None:
+        self._seed(filter_backend)
+        assert filter_backend.search(_embeddings(1)[0], limit=10, entity_types=["customer"]) == []
+
+    def test_unknown_type_matches_nothing(self, filter_backend: PgVectorBackend) -> None:
+        ids = self._seed(filter_backend)
+        filter_backend.set_chunk_entity_types({ids[0]: ["customer"]})
+        assert filter_backend.search(_embeddings(1)[0], limit=10, entity_types=["ghost"]) == []
+
+    def test_empty_mapping_is_a_noop(self, filter_backend: PgVectorBackend) -> None:
+        assert filter_backend.set_chunk_entity_types({}) == 0
+
+    def test_types_are_deduped_and_sorted(self, filter_backend: PgVectorBackend) -> None:
+        ids = self._seed(filter_backend)
+        filter_backend.set_chunk_entity_types({ids[0]: ["b", "a", "b"]})
+        with filter_backend._pgconn.cursor() as cur:
+            cur.execute(
+                f"SELECT entity_types FROM {filter_backend._table} WHERE chunk_id = %s",  # noqa: S608
+                [ids[0]],
+            )
+            row = cur.fetchone()
+        assert row is not None and row[0] == ["a", "b"]
+
+    def test_filter_applies_to_hybrid_lane(self, filter_backend: PgVectorBackend) -> None:
+        ids = self._seed(filter_backend)
+        filter_backend.set_chunk_entity_types({ids[0]: ["customer"], ids[1]: ["org"]})
+        hits = filter_backend.search(
+            _embeddings(1)[0], limit=10, query_text="drill", entity_types=["customer"]
+        )
+        assert [c.document_name for _, _, c in hits] == ["doc_a"]
+
+    def test_batched_update_spans_multiple_batches(self, filter_backend: PgVectorBackend) -> None:
+        """set_chunk_entity_types batches; cross the boundary to catch an off-by-one."""
+        import chonk.storage._pg as _pg
+
+        n = 25
+        chunks = [_chunk(f"doc_{i:03d}", 0, f"content {i}") for i in range(n)]
+        filter_backend.add_chunks(chunks, _embeddings(n))
+        with filter_backend._pgconn.cursor() as cur:
+            cur.execute(
+                f"SELECT chunk_id FROM {filter_backend._table} ORDER BY document_name"  # noqa: S608
+            )
+            ids = [r[0] for r in cur.fetchall()]
+
+        original = _pg._UPDATE_BATCH_SIZE
+        _pg._UPDATE_BATCH_SIZE = 10  # 25 rows -> batches of 10, 10, 5
+        try:
+            mapping = {cid: ["even" if i % 2 == 0 else "odd"] for i, cid in enumerate(ids)}
+            assert filter_backend.set_chunk_entity_types(mapping) == n
+        finally:
+            _pg._UPDATE_BATCH_SIZE = original
+
+        with filter_backend._pgconn.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(*) FROM {filter_backend._table} "  # noqa: S608
+                f"WHERE entity_types IS NOT NULL"
+            )
+            row = cur.fetchone()
+        assert row is not None and row[0] == n
+
+        hits = filter_backend.search(_embeddings(1)[0], limit=100, entity_types=["even"])
+        assert len(hits) == 13  # indices 0,2,...,24
+
+    def test_update_leaves_untouched_rows_alone(self, filter_backend: PgVectorBackend) -> None:
+        ids = self._seed(filter_backend)
+        filter_backend.set_chunk_entity_types({ids[0]: ["customer"]})
+        with filter_backend._pgconn.cursor() as cur:
+            cur.execute(
+                f"SELECT entity_types FROM {filter_backend._table} WHERE chunk_id = %s",  # noqa: S608
+                [ids[1]],
+            )
+            row = cur.fetchone()
+        assert row is not None and row[0] is None
+
+    def test_gin_index_exists_on_entity_types(self, filter_backend: PgVectorBackend) -> None:
+        with filter_backend._pgconn.cursor() as cur:
+            cur.execute(
+                "SELECT indexdef FROM pg_indexes WHERE tablename = %s AND indexname = %s",
+                [filter_backend._table, f"{filter_backend._table}_entity_types_idx"],
+            )
+            row = cur.fetchone()
+        assert row is not None, "entity_types GIN index missing"
+        assert "gin" in row[0].lower()
+        assert "entity_types" in row[0]
+
+    def test_planner_can_use_the_gin_index(self, filter_backend: PgVectorBackend) -> None:
+        ids = self._seed(filter_backend)
+        filter_backend.set_chunk_entity_types({ids[0]: ["customer"], ids[1]: ["org"]})
+        with filter_backend._pgconn.cursor() as cur:
+            # Force the planner to prefer the index over a seq scan on a tiny table.
+            cur.execute("SET enable_seqscan = off")
+            cur.execute(
+                f"EXPLAIN SELECT chunk_id FROM {filter_backend._table} "  # noqa: S608
+                f"WHERE entity_types && %s",
+                [["customer"]],
+            )
+            plan = "\n".join(r[0] for r in cur.fetchall())
+            cur.execute("SET enable_seqscan = on")
+        assert f"{filter_backend._table}_entity_types_idx" in plan, plan

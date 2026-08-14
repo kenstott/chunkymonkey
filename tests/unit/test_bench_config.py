@@ -14,6 +14,7 @@ Covers:
   - [[vocab.entities]] static and db_query entries feeding
     _build_entity_index_from_store via SchemaVocabBuilder
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,11 +28,12 @@ import pytest
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-import demo.graphrag_bench as _bench
+import demo.graphrag_bench as _bench  # noqa: E402  # needs the sys.path shim above
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _ns(**kwargs) -> argparse.Namespace:
     return argparse.Namespace(**kwargs)
@@ -47,15 +49,16 @@ def _write_toml(tmp_path: Path, name: str, content: str) -> Path:
 # _deep_merge
 # ---------------------------------------------------------------------------
 
+
 class TestDeepMerge:
     def test_flat_override(self):
         result = _bench._deep_merge({"a": 1, "b": 2}, {"b": 99})
         assert result == {"a": 1, "b": 99}
 
     def test_nested_dict_merged_not_replaced(self):
-        base     = {"index": {"db_name": "old.duckdb", "embed_model": "bge"}}
+        base = {"index": {"db_name": "old.duckdb", "embed_model": "bge"}}
         override = {"index": {"db_name": "new.duckdb"}}
-        result   = _bench._deep_merge(base, override)
+        result = _bench._deep_merge(base, override)
         assert result["index"]["db_name"] == "new.duckdb"
         assert result["index"]["embed_model"] == "bge"
 
@@ -64,15 +67,15 @@ class TestDeepMerge:
         assert result["a"] is None
 
     def test_list_replaced_not_merged(self):
-        base     = {"sources": [1, 2, 3]}
+        base = {"sources": [1, 2, 3]}
         override = {"sources": [4, 5]}
-        result   = _bench._deep_merge(base, override)
+        result = _bench._deep_merge(base, override)
         assert result["sources"] == [4, 5]
 
     def test_deep_nested_three_levels(self):
-        base     = {"a": {"b": {"c": 1, "d": 2}}}
+        base = {"a": {"b": {"c": 1, "d": 2}}}
         override = {"a": {"b": {"c": 99}}}
-        result   = _bench._deep_merge(base, override)
+        result = _bench._deep_merge(base, override)
         assert result["a"]["b"]["c"] == 99
         assert result["a"]["b"]["d"] == 2
 
@@ -91,48 +94,73 @@ class TestDeepMerge:
 # _load_config
 # ---------------------------------------------------------------------------
 
+
 class TestLoadConfig:
     def test_returns_empty_for_none(self):
         assert _bench._load_config(None) == {}
 
     def test_simple_toml_loaded(self, tmp_path):
-        p = _write_toml(tmp_path, "cfg.toml", """\
+        p = _write_toml(
+            tmp_path,
+            "cfg.toml",
+            """\
             [index]
             db_name = "test.duckdb"
-        """)
+        """,
+        )
         cfg = _bench._load_config(str(p))
         assert cfg["index"]["db_name"] == "test.duckdb"
 
     def test_extends_inherits_parent_keys(self, tmp_path):
-        _write_toml(tmp_path, "base.toml", """\
+        _write_toml(
+            tmp_path,
+            "base.toml",
+            """\
             [index]
             embed_model = "bge-large"
             db_name = "base.duckdb"
-        """)
-        child = _write_toml(tmp_path, "child.toml", """\
+        """,
+        )
+        child = _write_toml(
+            tmp_path,
+            "child.toml",
+            """\
             extends = "base.toml"
             [index]
             db_name = "child.duckdb"
-        """)
+        """,
+        )
         cfg = _bench._load_config(str(child))
         assert cfg["index"]["db_name"] == "child.duckdb"
         assert cfg["index"]["embed_model"] == "bge-large"
 
     def test_extends_chain_two_levels(self, tmp_path):
-        _write_toml(tmp_path, "grand.toml", """\
+        _write_toml(
+            tmp_path,
+            "grand.toml",
+            """\
             [gen]
             model = "gpt-4o-mini"
-        """)
-        _write_toml(tmp_path, "parent.toml", """\
+        """,
+        )
+        _write_toml(
+            tmp_path,
+            "parent.toml",
+            """\
             extends = "grand.toml"
             [index]
             db_name = "parent.duckdb"
-        """)
-        child = _write_toml(tmp_path, "child.toml", """\
+        """,
+        )
+        child = _write_toml(
+            tmp_path,
+            "child.toml",
+            """\
             extends = "parent.toml"
             [retrieval]
             top_k = 10
-        """)
+        """,
+        )
         cfg = _bench._load_config(str(child))
         assert cfg["gen"]["model"] == "gpt-4o-mini"
         assert cfg["index"]["db_name"] == "parent.duckdb"
@@ -142,37 +170,51 @@ class TestLoadConfig:
         # Build a chain longer than 5
         prev = _write_toml(tmp_path, "c0.toml", "[index]\ndb_name='c0.duckdb'\n")
         for i in range(1, 8):
-            prev = _write_toml(tmp_path, f"c{i}.toml", f'extends = "c{i-1}.toml"\n[index]\ndb_name="c{i}.duckdb"\n')
+            prev = _write_toml(
+                tmp_path,
+                f"c{i}.toml",
+                f'extends = "c{i - 1}.toml"\n[index]\ndb_name="c{i}.duckdb"\n',
+            )
         with pytest.raises(RuntimeError, match="max depth"):
             _bench._load_config(str(prev))
 
     def test_extends_key_removed_from_result(self, tmp_path):
         _write_toml(tmp_path, "base.toml", "[index]\ndb_name='base.duckdb'\n")
-        child = _write_toml(tmp_path, "child.toml", 'extends = "base.toml"\n[retrieval]\ntop_k = 5\n')
+        child = _write_toml(
+            tmp_path, "child.toml", 'extends = "base.toml"\n[retrieval]\ntop_k = 5\n'
+        )
         cfg = _bench._load_config(str(child))
         assert "extends" not in cfg
 
     def test_source_array_loaded(self, tmp_path):
-        p = _write_toml(tmp_path, "cfg.toml", """\
+        p = _write_toml(
+            tmp_path,
+            "cfg.toml",
+            """\
             [[source]]
             type = "directory"
             uri  = "/tmp/docs"
             [[source]]
             type = "github"
             uri  = "https://github.com/org/repo"
-        """)
+        """,
+        )
         cfg = _bench._load_config(str(p))
         assert len(cfg["source"]) == 2
         assert cfg["source"][0]["type"] == "directory"
         assert cfg["source"][1]["type"] == "github"
 
     def test_vocab_entities_array_loaded(self, tmp_path):
-        p = _write_toml(tmp_path, "cfg.toml", """\
+        p = _write_toml(
+            tmp_path,
+            "cfg.toml",
+            """\
             [[vocab.entities]]
             type        = "static"
             entity_type = "customer"
             names       = ["Acme Corp", "Globex Inc"]
-        """)
+        """,
+        )
         cfg = _bench._load_config(str(p))
         entries = cfg["vocab"]["entities"]
         assert len(entries) == 1
@@ -184,6 +226,7 @@ class TestLoadConfig:
 # ---------------------------------------------------------------------------
 # _apply_config
 # ---------------------------------------------------------------------------
+
 
 class TestApplyConfig:
     # ── index section ────────────────────────────────────────────────────────
@@ -327,7 +370,41 @@ class TestApplyConfig:
         args = _ns()
         entries = [{"type": "static", "entity_type": "customer", "names": ["Acme"]}]
         _bench._apply_config({"vocab": {"entities": entries}}, args)
-        assert args.vocab_entities == entries
+        assert args.vocab_entities == [dict(entries[0], namespace="global")]
+
+    def test_vocab_entity_namespace_defaults_to_global(self):
+        args = _ns()
+        entries = [
+            {"type": "static", "entity_type": "customer", "names": ["Acme"]},
+            {
+                "type": "db_query",
+                "entity_type": "employee",
+                "connection": "duckdb:///x.duckdb",
+                "sql": "SELECT n FROM e",
+            },
+        ]
+        _bench._apply_config({"vocab": {"entities": entries}}, args)
+        assert [e["namespace"] for e in args.vocab_entities] == ["global", "global"]
+
+    def test_vocab_entity_namespace_preserved_when_set(self):
+        args = _ns()
+        entries = [
+            {
+                "type": "static",
+                "entity_type": "customer",
+                "names": ["Acme"],
+                "namespace": "finance",
+            },
+            {
+                "type": "db_query",
+                "entity_type": "employee",
+                "connection": "duckdb:///x.duckdb",
+                "sql": "SELECT n FROM e",
+                "namespace": "hr",
+            },
+        ]
+        _bench._apply_config({"vocab": {"entities": entries}}, args)
+        assert [e["namespace"] for e in args.vocab_entities] == ["finance", "hr"]
 
     def test_vocab_entities_not_overridden_when_already_set(self):
         existing = [{"type": "static", "entity_type": "product", "names": ["Widget"]}]
@@ -344,9 +421,13 @@ class TestApplyConfig:
     def test_multiple_vocab_entries_preserved(self):
         args = _ns()
         entries = [
-            {"type": "static",   "entity_type": "customer", "names": ["Acme", "Globex"]},
-            {"type": "db_query", "entity_type": "employee", "connection": "sqlite:///x.db",
-             "sql": "SELECT name FROM emp"},
+            {"type": "static", "entity_type": "customer", "names": ["Acme", "Globex"]},
+            {
+                "type": "db_query",
+                "entity_type": "employee",
+                "connection": "sqlite:///x.db",
+                "sql": "SELECT name FROM emp",
+            },
         ]
         _bench._apply_config({"vocab": {"entities": entries}}, args)
         assert len(args.vocab_entities) == 2
@@ -356,7 +437,10 @@ class TestApplyConfig:
     # ── full round-trip from TOML file ────────────────────────────────────────
 
     def test_full_round_trip_from_toml(self, tmp_path):
-        p = _write_toml(tmp_path, "run.toml", """\
+        p = _write_toml(
+            tmp_path,
+            "run.toml",
+            """\
             [retrieval]
             top_k = 10
             enhanced = true
@@ -369,10 +453,16 @@ class TestApplyConfig:
             type        = "static"
             entity_type = "customer"
             names       = ["Acme Corp"]
-        """)
-        cfg  = _bench._load_config(str(p))
-        args = _ns(top_k=None, enhanced=False, lane_entity_min_sim=None,
-                   gen_model="gpt-4o-mini-2024-07-18", gen_provider="openai")
+        """,
+        )
+        cfg = _bench._load_config(str(p))
+        args = _ns(
+            top_k=None,
+            enhanced=False,
+            lane_entity_min_sim=None,
+            gen_model="gpt-4o-mini-2024-07-18",
+            gen_provider="openai",
+        )
         _bench._apply_config(cfg, args)
         assert args.top_k == 10
         assert args.enhanced is True
@@ -385,9 +475,11 @@ class TestApplyConfig:
 # SchemaVocabBuilder.add_entities / build_data_matcher
 # ---------------------------------------------------------------------------
 
+
 class TestSchemaVocabBuilderEntities:
     def test_static_names_matched(self):
         from chonk.ner import SchemaVocabBuilder
+
         builder = SchemaVocabBuilder()
         builder.add_entities(["Acme Corp", "Globex Inc"], entity_type="customer")
         matcher = builder.build_data_matcher()
@@ -398,6 +490,7 @@ class TestSchemaVocabBuilderEntities:
 
     def test_entity_type_assigned_correctly(self):
         from chonk.ner import SchemaVocabBuilder
+
         builder = SchemaVocabBuilder()
         builder.add_entities(["John Smith"], entity_type="employee")
         matcher = builder.build_data_matcher()
@@ -406,6 +499,7 @@ class TestSchemaVocabBuilderEntities:
 
     def test_case_insensitive_match(self):
         from chonk.ner import SchemaVocabBuilder
+
         builder = SchemaVocabBuilder()
         builder.add_entities(["Acme Corp"], entity_type="customer")
         matcher = builder.build_data_matcher()
@@ -413,6 +507,7 @@ class TestSchemaVocabBuilderEntities:
 
     def test_multiple_entity_types(self):
         from chonk.ner import SchemaVocabBuilder
+
         builder = SchemaVocabBuilder()
         builder.add_entities(["Acme Corp"], entity_type="customer")
         builder.add_entities(["Jane Doe"], entity_type="employee")
@@ -424,24 +519,28 @@ class TestSchemaVocabBuilderEntities:
 
     def test_data_term_count(self):
         from chonk.ner import SchemaVocabBuilder
+
         builder = SchemaVocabBuilder()
         builder.add_entities(["Alpha", "Beta", "Gamma"], entity_type="product")
         assert builder.data_term_count() == 3
 
     def test_empty_names_list(self):
         from chonk.ner import SchemaVocabBuilder
+
         builder = SchemaVocabBuilder()
         builder.add_entities([], entity_type="customer")
         assert builder.data_term_count() == 0
 
     def test_chaining(self):
         from chonk.ner import SchemaVocabBuilder
+
         builder = SchemaVocabBuilder()
         result = builder.add_entities(["Acme"], entity_type="customer")
         assert result is builder
 
     def test_no_match_outside_vocab(self):
         from chonk.ner import SchemaVocabBuilder
+
         builder = SchemaVocabBuilder()
         builder.add_entities(["Acme Corp"], entity_type="customer")
         matcher = builder.build_data_matcher()
@@ -451,6 +550,7 @@ class TestSchemaVocabBuilderEntities:
 # ---------------------------------------------------------------------------
 # SchemaVocabBuilder.add_from_db
 # ---------------------------------------------------------------------------
+
 
 class TestSchemaVocabBuilderFromDb:
     def _make_db(self, tmp_path: Path) -> str:
@@ -465,6 +565,7 @@ class TestSchemaVocabBuilderFromDb:
 
     def test_names_loaded_from_db(self, tmp_path):
         from chonk.ner import SchemaVocabBuilder
+
         db_url = f"duckdb:///{self._make_db(tmp_path)}"
         builder = SchemaVocabBuilder()
         builder.add_from_db(db_url, {"customer": "SELECT name FROM customers"})
@@ -472,6 +573,7 @@ class TestSchemaVocabBuilderFromDb:
 
     def test_matched_after_db_load(self, tmp_path):
         from chonk.ner import SchemaVocabBuilder
+
         db_url = f"duckdb:///{self._make_db(tmp_path)}"
         builder = SchemaVocabBuilder()
         builder.add_from_db(db_url, {"customer": "SELECT name FROM customers"})
@@ -482,12 +584,16 @@ class TestSchemaVocabBuilderFromDb:
 
     def test_multiple_queries_different_types(self, tmp_path):
         from chonk.ner import SchemaVocabBuilder
+
         db_url = f"duckdb:///{self._make_db(tmp_path)}"
         builder = SchemaVocabBuilder()
-        builder.add_from_db(db_url, {
-            "customer": "SELECT name FROM customers",
-            "employee": "SELECT full_name FROM employees",
-        })
+        builder.add_from_db(
+            db_url,
+            {
+                "customer": "SELECT name FROM customers",
+                "employee": "SELECT full_name FROM employees",
+            },
+        )
         assert builder.data_term_count() == 5
         matcher = builder.build_data_matcher()
         results = matcher.match("Alice Smith works at Globex Inc.")
@@ -499,6 +605,7 @@ class TestSchemaVocabBuilderFromDb:
 # ---------------------------------------------------------------------------
 # _build_entity_index_from_store — vocab_entities integration
 # ---------------------------------------------------------------------------
+
 
 class TestBuildEntityIndexVocabEntities:
     def _make_store(self, tmp_path: Path):
@@ -521,6 +628,7 @@ class TestBuildEntityIndexVocabEntities:
     def test_static_vocab_entities_indexed(self, tmp_path):
         db_path = self._make_store(tmp_path)
         from chonk.storage._store import Store
+
         vocab_entries = [
             {"type": "static", "entity_type": "customer", "names": ["Acme Corp", "Globex Inc"]},
             {"type": "static", "entity_type": "employee", "names": ["Alice Smith"]},
@@ -535,6 +643,7 @@ class TestBuildEntityIndexVocabEntities:
     def test_no_vocab_entities_uses_spacy_only(self, tmp_path):
         db_path = self._make_store(tmp_path)
         from chonk.storage._store import Store
+
         with Store(db_path, embedding_dim=1024) as store:
             idx = _bench._build_entity_index_from_store(
                 store, use_schema_vocab=False, vocab_entities=None
@@ -544,6 +653,7 @@ class TestBuildEntityIndexVocabEntities:
     def test_empty_vocab_entities_list(self, tmp_path):
         db_path = self._make_store(tmp_path)
         from chonk.storage._store import Store
+
         with Store(db_path, embedding_dim=1024) as store:
             idx = _bench._build_entity_index_from_store(
                 store, use_schema_vocab=False, vocab_entities=[]

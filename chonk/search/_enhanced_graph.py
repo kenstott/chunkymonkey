@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from ..models import DocumentChunk, ScoredChunk
+from ..storage._schema import SYNTHETIC_CHUNK_TYPES
 from ._enhanced_support import RetrievalTrace
 
 if TYPE_CHECKING:
@@ -170,6 +171,7 @@ class _GraphMixin:
             query_text=query_text,
             namespaces=namespaces,
             domain_ids=domain_ids,
+            exclude_chunk_types=SYNTHETIC_CHUNK_TYPES,
         ):
             if chunk_id not in pool:
                 pool[chunk_id] = ScoredChunk(
@@ -254,6 +256,7 @@ class _GraphMixin:
         query_text: str | None = None,
         query_entities: list[str] | None = None,
         context_token_budget: int = 8000,
+        namespaces: list[str] | None = None,
     ) -> str:
         """Assemble MS-GraphRAG-style structured context from retrieved chunks.
 
@@ -266,13 +269,18 @@ class _GraphMixin:
             hits: List of ``(chunk_id, score, DocumentChunk)`` tuples or ScoredChunk objects.
             query_text: Optional query text for NER-based entity resolution.
             query_entities: Pre-resolved entity IDs; used if query_text NER is absent.
-            namespace: Namespace for entity description lookups.
+            context_token_budget: Approximate token ceiling for the assembled context.
+            namespaces: Restrict entity records to entities associated with a chunk
+                in one of these namespaces. ``None`` (the default) applies no
+                namespace restriction. Chunks themselves are already namespace-filtered
+                upstream; this scopes the entity metadata joined into the context, which
+                also reaches entity IDs supplied by ``query_entity_id_fn``.
         """
         chunk_pairs = self._normalise_hits(hits)
         chunk_ids = [cid for cid, _ in chunk_pairs]
 
         entity_ids = self._collect_entity_ids(chunk_ids, query_text)
-        entity_records = self._fetch_entity_records(entity_ids)
+        entity_records = self._fetch_entity_records(entity_ids, namespaces)
         rel_rows = self._collect_rel_rows(entity_ids, entity_records)
         community_texts = self._collect_community_texts(chunk_ids)
 
@@ -306,18 +314,40 @@ class _GraphMixin:
             entity_ids.update(self._query_entity_id_fn(query_text))
         return entity_ids
 
-    def _fetch_entity_records(self, entity_ids: set[str]) -> list[dict[str, str]]:
-        """Fetch (id, name, type, description) rows for the given entity IDs."""
+    def _fetch_entity_records(
+        self,
+        entity_ids: set[str],
+        namespaces: list[str] | None = None,
+    ) -> list[dict[str, str]]:
+        """Fetch (id, name, type, description) rows for the given entity IDs.
+
+        When *namespaces* is given, an entity is kept only if it is associated
+        with a chunk in one of those namespaces. Matches the
+        ``COALESCE(namespace, 'global')`` convention used by the context graph.
+        """
         if not entity_ids:
+            return []
+        if namespaces is not None and not namespaces:
+            # Restricting to an empty namespace set matches nothing, mirroring
+            # Store.search(namespaces=[]).
             return []
         conn = self._store.vector._conn
         eid_list = list(entity_ids)
         placeholders = ", ".join("?" * len(eid_list))
+        ns_clause = ""
+        params: list[Any] = list(eid_list)
+        if namespaces is not None:
+            ns_placeholders = ", ".join("?" * len(namespaces))
+            ns_clause = (
+                f" AND EXISTS (SELECT 1 FROM chunk_entities ce WHERE ce.entity_id = e.id "
+                f"AND COALESCE(ce.namespace, 'global') IN ({ns_placeholders}))"
+            )
+            params.extend(namespaces)
         rows = conn.execute(
             f"SELECT e.id, e.name, e.entity_type, COALESCE(e.description, '') "
             f"FROM entities e "
-            f"WHERE e.id IN ({placeholders})",
-            eid_list,
+            f"WHERE e.id IN ({placeholders}){ns_clause}",
+            params,
         ).fetchall()
         return [{"id": r[0], "name": r[1], "type": r[2], "description": r[3]} for r in rows]
 
@@ -649,6 +679,7 @@ class _GraphMixin:
                 query_text=None,
                 namespaces=namespaces,
                 domain_ids=domain_ids,
+                exclude_chunk_types=SYNTHETIC_CHUNK_TYPES,
             )
             for chunk_id, score, chunk in hits:
                 if min_sim is not None and score < min_sim:
@@ -681,6 +712,7 @@ class _GraphMixin:
             query_text=query_text,
             namespaces=namespaces,
             domain_ids=domain_ids,
+            exclude_chunk_types=SYNTHETIC_CHUNK_TYPES,
         )
         for chunk_id, score, chunk in expanded_seeds:
             if chunk_id in new_pool:

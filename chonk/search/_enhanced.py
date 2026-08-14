@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 import numpy as np
 
 from ..models import DocumentChunk, ScoredChunk
+from ..storage._schema import SYNTHETIC_CHUNK_TYPES
 from ._enhanced_graph import _GraphMixin
 from ._enhanced_scoring import _ScoringMixin
 from ._enhanced_support import (
@@ -596,6 +597,7 @@ class EnhancedSearch(_GraphMixin, _ScoringMixin):
             query_text=query_text,
             namespaces=namespaces,
             domain_ids=domain_ids,
+            exclude_chunk_types=SYNTHETIC_CHUNK_TYPES,
         )
         pool: dict[str, ScoredChunk] = {}
         seed_chunk_ids: list[str] = []

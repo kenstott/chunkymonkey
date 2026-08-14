@@ -2,17 +2,16 @@
 # Canary: 62e8e7d7-5d5b-4582-8728-020d35c0ef96
 
 """Unit tests for SchemaMatcher and normalize_schema_term — Phase 1.4."""
-from __future__ import annotations
 
-import pytest
+from __future__ import annotations
 
 from chonk import SchemaMatcher, normalize_schema_term
 from chonk.ner import merge_matches
 
-
 # ---------------------------------------------------------------------------
 # normalize_schema_term
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeSchematerm:
     def test_underscore_to_spaces(self):
@@ -31,7 +30,9 @@ class TestNormalizeSchematerm:
         assert normalize_schema_term("order-items") == "order items"
 
     def test_to_singular_strips_trailing_s(self):
-        assert normalize_schema_term("performance_reviews", to_singular=True) == "performance review"
+        assert (
+            normalize_schema_term("performance_reviews", to_singular=True) == "performance review"
+        )
 
     def test_to_singular_no_s_unchanged(self):
         assert normalize_schema_term("employee", to_singular=True) == "employee"
@@ -52,6 +53,7 @@ class TestNormalizeSchematerm:
 # ---------------------------------------------------------------------------
 # SchemaMatcher — construction and entity_type assignment
 # ---------------------------------------------------------------------------
+
 
 class TestSchemaMatcherConstruction:
     def test_schema_terms_entity_type(self):
@@ -96,6 +98,7 @@ class TestSchemaMatcherConstruction:
 # ---------------------------------------------------------------------------
 # SchemaMatcher — variant matching
 # ---------------------------------------------------------------------------
+
 
 class TestSchemaMatcherVariants:
     def test_matches_normalized_form(self):
@@ -162,7 +165,7 @@ class TestSchemaMatcherVariants:
         results = m.match(text)
         assert len(results) == 1
         pos = results[0].positions[0]
-        assert text[pos:pos + len("orders")] == "orders"
+        assert text[pos : pos + len("orders")] == "orders"
 
     def test_spans_are_start_end_pairs(self):
         m = SchemaMatcher(schema_terms=["orders"])
@@ -176,6 +179,7 @@ class TestSchemaMatcherVariants:
 # normalize_schema_term + SchemaMatcher — term without underscore
 # ---------------------------------------------------------------------------
 
+
 class TestNoUnderscoreTerm:
     def test_camel_matches_spaced(self):
         m = SchemaMatcher(schema_terms=["customerName"])
@@ -187,10 +191,27 @@ class TestNoUnderscoreTerm:
         results = m.match("stored in customername")
         assert len(results) == 1
 
-    def test_camel_no_underscore_variant(self):
-        # "customerName" has no underscore — underscore form should not be added
+    def test_underscore_variant_still_not_generated(self):
+        # _variants() only adds the literal underscore form when the source term
+        # contains one — "customerName" contributes no "customer_name" key.
+        from chonk.ner._schema import _variants
+
+        assert "customer_name" not in _variants("customerName")
+
+    def test_camel_matches_snake_case_in_text(self):
+        # Separator normalisation makes the match symmetric: text "customer_name"
+        # normalises to "customer name", which is the stored variant. This is the
+        # equivalence normalize_schema_term() documents for underscores,
+        # camelCase, PascalCase, and kebab-case.
         m = SchemaMatcher(schema_terms=["customerName"])
-        # should NOT match "customer_name" as that variant isn't generated
+        results = m.match("field customer_name here")
+        assert len(results) == 1
+        # Span points at the original text, not the normalised copy.
+        start, end = results[0].spans[0]
+        assert "field customer_name here"[start:end] == "customer_name"
+
+    def test_normalization_can_be_disabled(self):
+        m = SchemaMatcher(schema_terms=["customerName"], normalize_separators=False)
         results = m.match("field customer_name here")
         assert len(results) == 0
 
@@ -199,9 +220,11 @@ class TestNoUnderscoreTerm:
 # Integration: SchemaMatcher feeds merge_matches
 # ---------------------------------------------------------------------------
 
+
 class TestMergeIntegration:
     def test_schema_matches_survive_merge_when_no_overlap(self):
         from chonk.ner._vocabulary import EntityMatch
+
         schema_m = SchemaMatcher(schema_terms=["invoice_id"])
         text = "The invoice_id references London offices."
         schema_hits = schema_m.match(text)
@@ -224,6 +247,7 @@ class TestMergeIntegration:
 
     def test_schema_wins_on_overlap(self):
         from chonk.ner._vocabulary import EntityMatch
+
         schema_m = SchemaMatcher(schema_terms=["orders"])
         text = "The orders are tracked."
         schema_hits = schema_m.match(text)

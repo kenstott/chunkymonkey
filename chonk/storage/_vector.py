@@ -111,7 +111,8 @@ class DuckDBVectorBackend:
             f"""
             SELECT chunk_id, document_name, section, chunk_index,
                    content, breadcrumb, chunk_type, source_offset, source_length,
-                   namespace, source_detail, source_id, domain_id, embedding
+                   namespace, source_detail, source_id, domain_id, embedding,
+                   entity_types
             FROM {self._read_table}
             """
         ).fetchall()
@@ -120,6 +121,21 @@ class DuckDBVectorBackend:
         self._np_chunk_rows = rows
         assert _np is not None, "numpy required for preload_embeddings"
         self._np_embeddings = _np.array([r[13] for r in rows], dtype="float32")
+
+    def set_chunk_entity_types(self, mapping: dict[str, list[str]]) -> int:
+        """Denormalise entity types onto chunk rows. Returns rows written.
+
+        ``mapping`` is ``{chunk_id: [entity_type, ...]}``. Called by build_ner
+        once chunk_entities is populated, so ``search(entity_types=[...])`` can
+        filter without a join on every backend.
+        """
+        if not mapping:
+            return 0
+        self._conn.executemany(
+            "UPDATE embeddings SET entity_types = ? WHERE chunk_id = ?",
+            [[sorted(set(types)), chunk_id] for chunk_id, types in mapping.items()],
+        )
+        return len(mapping)
 
     @property
     def _conn(self) -> Any:  # noqa: ANN401
@@ -373,6 +389,8 @@ class DuckDBVectorBackend:
         chunk_types: list[str] | None = None,
         domain_ids: list[str] | None = None,
         session_fingerprint: str | None = None,
+        exclude_chunk_types: list[str] | None = None,
+        entity_types: list[str] | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         from ..models import DocumentChunk
 
@@ -391,6 +409,13 @@ class DuckDBVectorBackend:
                     placeholders = ", ".join("?" * len(values))
                     clauses.append(f"e.{col} IN ({placeholders})")
                     params.extend(values)
+            if exclude_chunk_types is not None:
+                placeholders = ", ".join("?" * len(exclude_chunk_types))
+                clauses.append(f"e.chunk_type NOT IN ({placeholders})")
+                params.extend(exclude_chunk_types)
+            if entity_types is not None:
+                clauses.append("list_has_any(e.entity_types, ?)")
+                params.append(list(entity_types))
             if session_fingerprint is not None:
                 clauses.append("e.session_fingerprint = ?")
                 params.append(session_fingerprint)
@@ -482,6 +507,8 @@ class DuckDBVectorBackend:
         chunk_types: list[str] | None = None,
         domain_ids: list[str] | None = None,
         session_fingerprint: str | None = None,
+        exclude_chunk_types: list[str] | None = None,
+        entity_types: list[str] | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         """Search by vector similarity, with optional BM25 hybrid re-ranking.
 
@@ -514,6 +541,7 @@ class DuckDBVectorBackend:
             sims = self._np_embeddings @ query_vec  # (n,)
             ns_set = set(namespaces) if namespaces is not None else None
             ct_set = set(chunk_types) if chunk_types is not None else None
+            ct_excl = set(exclude_chunk_types) if exclude_chunk_types is not None else None
             di_set = set(domain_ids) if domain_ids is not None else None
             top_idx = _np.argpartition(sims, -fetch_limit)[-fetch_limit:]
             top_idx = top_idx[_np.argsort(sims[top_idx])[::-1]]
@@ -521,6 +549,18 @@ class DuckDBVectorBackend:
                 top_idx = [i for i in top_idx if self._np_chunk_rows[i][9] in ns_set]
             if ct_set is not None:
                 top_idx = [i for i in top_idx if self._np_chunk_rows[i][6] in ct_set]
+            if ct_excl is not None:
+                top_idx = [i for i in top_idx if self._np_chunk_rows[i][6] not in ct_excl]
+            if entity_types is not None:
+                et_set = set(entity_types)
+                # index 14 = entity_types; NULL until build_ner has run
+                top_idx = [
+                    i
+                    for i in top_idx
+                    if len(self._np_chunk_rows[i]) > 14
+                    and self._np_chunk_rows[i][14]
+                    and et_set & set(self._np_chunk_rows[i][14])
+                ]
             if di_set is not None:
                 # domain_id is at index 12 in preloaded rows (added after source_id at 11)
                 top_idx = [
@@ -547,6 +587,13 @@ class DuckDBVectorBackend:
                 placeholders = ", ".join("?" * len(chunk_types))
                 clauses.append(f"e.chunk_type IN ({placeholders})")
                 params.extend(chunk_types)
+            if exclude_chunk_types is not None:
+                placeholders = ", ".join("?" * len(exclude_chunk_types))
+                clauses.append(f"e.chunk_type NOT IN ({placeholders})")
+                params.extend(exclude_chunk_types)
+            if entity_types is not None:
+                clauses.append("list_has_any(e.entity_types, ?)")
+                params.append(list(entity_types))
             if domain_ids is not None:
                 placeholders = ", ".join("?" * len(domain_ids))
                 clauses.append(f"e.domain_id IN ({placeholders})")
@@ -619,6 +666,8 @@ class DuckDBVectorBackend:
             limit=fetch_limit,
             namespaces=namespaces,
             chunk_types=chunk_types,
+            exclude_chunk_types=exclude_chunk_types,
+            entity_types=entity_types,
             domain_ids=domain_ids,
             session_fingerprint=session_fingerprint,
         )

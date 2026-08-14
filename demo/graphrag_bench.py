@@ -47,7 +47,7 @@ except ImportError:
 sys.path.insert(0, str(_PROJECT_ROOT))
 from chonk import NOVEL_STRUCTURAL_LEVELS, chunk_document, promote_plain_text_headers
 from chonk.context import enrich_chunks
-from chonk.storage._store import Store
+from chonk.storage._store import GLOBAL_NAMESPACE, Store
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -210,7 +210,12 @@ def _apply_config(cfg: dict, args: argparse.Namespace) -> None:
 
     vocab_entries = cfg.get("vocab", {}).get("entities", [])
     if vocab_entries and not getattr(args, "vocab_entities", None):
-        args.vocab_entities = vocab_entries
+        # namespace is optional on every vocab entry type; unset means global —
+        # same rule [[source]] uses below.
+        args.vocab_entities = [
+            dict(entry, namespace=entry.get("namespace", GLOBAL_NAMESPACE))
+            for entry in vocab_entries
+        ]
 
     sources = cfg.get("source", [])
     if sources and not getattr(args, "sources", None):
@@ -1033,15 +1038,16 @@ def _build_entity_index_from_store(
             print(f"  SchemaVocab: {builder.table_count():,} tables, {builder.column_count():,} columns, {builder.api_term_count():,} API terms")
         for entry in (vocab_entities or []):
             etype = entry.get("entity_type", "term")
+            ns = entry.get("namespace")
             if entry.get("type") == "static":
                 names = entry.get("names", [])
-                builder.add_entities(names, entity_type=etype)
-                print(f"  VocabEntities static: {len(names):,} {etype!r} names")
+                builder.add_entities(names, entity_type=etype, namespace=ns)
+                print(f"  VocabEntities static: {len(names):,} {etype!r} names [ns={ns or 'global'}]")
             elif entry.get("type") == "db_query":
                 conn_url = entry["connection"]
                 sql = entry["sql"]
-                builder.add_from_db(conn_url, {etype: sql})
-                print(f"  VocabEntities db_query: {etype!r} from {conn_url!r}")
+                builder.add_from_db(conn_url, {etype: sql}, namespace=ns)
+                print(f"  VocabEntities db_query: {etype!r} from {conn_url!r} [ns={ns or 'global'}]")
         schema_matcher = builder.build()
         data_matcher = builder.build_data_matcher() if builder.data_term_count() > 0 else None
     else:
@@ -3620,7 +3626,7 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
                     if is_timeout:
                         # Defer to back of queue — do not retry inline
                         return {"id": r["id"], "question_type": qtype, "_deferred": True, "_attempt": attempt}
-                    elif is_rate:
+                    if is_rate:
                         retry_after = None
                         if hasattr(e, "response") and e.response is not None:
                             retry_after = e.response.headers.get("Retry-After")

@@ -73,7 +73,8 @@ _CATALOG_DDL = [
         source_detail       TEXT,
         source_id           TEXT,
         domain_id           TEXT,
-        session_fingerprint TEXT
+        session_fingerprint TEXT,
+        entity_types        VARCHAR[]
     )
     """,
     "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS source_detail TEXT",
@@ -165,7 +166,7 @@ _CATALOG_DDL = [
         namespace   TEXT    NOT NULL DEFAULT 'global',
         source      TEXT    NOT NULL DEFAULT 'llm',
         created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (alias, namespace)
+        PRIMARY KEY (alias, namespace, entity_id)
     )
     """,
     """
@@ -265,6 +266,8 @@ def _build_filter(
     chunk_types: list[str] | None,
     domain_ids: list[str] | None,
     session_fingerprint: str | None,
+    exclude_chunk_types: list[str] | None = None,
+    entity_types: list[str] | None = None,
 ) -> Any:  # noqa: ANN401
     """Build a Weaviate v4 Filter from search params, or None."""
     from weaviate.classes.query import Filter
@@ -274,6 +277,11 @@ def _build_filter(
         clauses.append(Filter.by_property("namespace").contains_any(namespaces))
     if chunk_types:
         clauses.append(Filter.by_property("chunk_type").contains_any(chunk_types))
+    if entity_types:
+        clauses.append(Filter.by_property("entity_types").contains_any(entity_types))
+    for excluded in exclude_chunk_types or []:
+        # Weaviate has no not_contains_any; AND one not_equal per excluded type.
+        clauses.append(Filter.by_property("chunk_type").not_equal(excluded))
     if domain_ids:
         clauses.append(Filter.by_property("domain_id").contains_any(domain_ids))
     if session_fingerprint is not None:
@@ -373,6 +381,14 @@ class WeaviateVectorBackend:
                 )
             # Also store numeric fields
             props += [
+                # Denormalised entity types; filterable so search(entity_types=[...])
+                # can push the predicate server-side.
+                Property(
+                    name="entity_types",
+                    data_type=DataType.TEXT_ARRAY,
+                    index_filterable=True,
+                    index_searchable=False,
+                ),
                 Property(name="chunk_index", data_type=DataType.INT, index_filterable=False),
                 Property(name="source_offset", data_type=DataType.INT, index_filterable=False),
                 Property(name="source_length", data_type=DataType.INT, index_filterable=False),
@@ -515,6 +531,8 @@ class WeaviateVectorBackend:
         chunk_types: list[str] | None = None,
         domain_ids: list[str] | None = None,
         session_fingerprint: str | None = None,
+        exclude_chunk_types: list[str] | None = None,
+        entity_types: list[str] | None = None,
     ) -> list[tuple[str, float, DocumentChunk]]:
         """Hybrid search: Weaviate ANN + BM25, merged via RRF.
 
@@ -526,7 +544,14 @@ class WeaviateVectorBackend:
         from ..models import DocumentChunk
 
         query_vec = np.array(query_embedding, dtype="float32").flatten().tolist()
-        wv_filter = _build_filter(namespaces, chunk_types, domain_ids, session_fingerprint)
+        wv_filter = _build_filter(
+            namespaces,
+            chunk_types,
+            domain_ids,
+            session_fingerprint,
+            exclude_chunk_types,
+            entity_types,
+        )
         fetch_limit = limit * 4
 
         from weaviate.classes.query import MetadataQuery
@@ -623,6 +648,35 @@ class WeaviateVectorBackend:
         ]
 
     # Protocol stubs (BM25 runs natively in Weaviate — no local FTS index needed)
+    def set_chunk_entity_types(self, mapping: dict[str, list[str]]) -> int:
+        """Denormalise entity types onto the catalog rows and Weaviate objects.
+
+        ``mapping`` is ``{chunk_id: [entity_type, ...]}``.
+        """
+        if not mapping:
+            return 0
+        self._catalog.executemany(
+            "UPDATE embeddings SET entity_types = ? WHERE chunk_id = ?",
+            [[sorted(set(t)), cid] for cid, t in mapping.items()],
+        )
+        from weaviate.classes.query import Filter
+
+        for chunk_id, types in mapping.items():
+            # Objects are inserted without an explicit UUID, so resolve by chunk_id.
+            found = self._col.query.fetch_objects(
+                filters=Filter.by_property("chunk_id").equal(chunk_id), limit=1
+            )
+            if not found.objects:
+                raise RuntimeError(
+                    f"cannot set entity_types: chunk_id {chunk_id!r} is absent from the "
+                    f"Weaviate collection {self._col.name!r}"
+                )
+            self._col.data.update(
+                uuid=found.objects[0].uuid,
+                properties={"entity_types": sorted(set(types))},
+            )
+        return len(mapping)
+
     def rebuild_fts_index(self) -> None:
         pass
 

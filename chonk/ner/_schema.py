@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from ._vocabulary import EntityMatch, _auto_id
+from ._vocabulary import EntityMatch, _typed_id, normalize_separators, normalize_surface
 
 # ---------------------------------------------------------------------------
 # Normalisation helper (exported from chonk.ner)
@@ -97,6 +97,10 @@ class SchemaMatcher:
         schema_terms: Table and column names → entity_type ``"schema"``.
         api_terms: Endpoint / operation names → entity_type ``"api"``.
         business_terms: Glossary / business terms → entity_type ``"term"``.
+        normalize_separators: Collapse runs of whitespace and connector
+            punctuation to a single space on both the stored variants and the
+            searched text, so separator differences do not cause a miss.
+            Reported spans are always offsets into the original text.
     """
 
     def __init__(
@@ -104,7 +108,9 @@ class SchemaMatcher:
         schema_terms: list[str] | None = None,
         api_terms: list[str] | None = None,
         business_terms: list[str] | None = None,
+        normalize_separators: bool = True,
     ) -> None:
+        self._normalize = normalize_separators
         # variant_lowercase -> (entity_id, display_name, entity_type)
         self._lookup: dict[str, tuple[str, str, str]] = {}
         # entity_id -> (canonical_name, display_name, entity_type)
@@ -117,12 +123,15 @@ class SchemaMatcher:
         ):
             for term in terms:
                 canonical = normalize_schema_term(term, to_singular=True)
-                eid = _auto_id(canonical)
+                eid = _typed_id(canonical, etype)
                 self._entities[eid] = (canonical, term, etype)
                 for variant in _variants(term):
+                    key = normalize_surface(variant) if self._normalize else variant
+                    if not key:
+                        continue
                     # First registration wins on collision
-                    if variant not in self._lookup:
-                        self._lookup[variant] = (eid, term, etype)
+                    if key not in self._lookup:
+                        self._lookup[key] = (eid, term, etype)
 
     # ------------------------------------------------------------------
     # Public API
@@ -141,6 +150,12 @@ class SchemaMatcher:
             List of ``EntityMatch`` objects.
         """
         check = text.lower()
+        # Scan normalised text so separator variants hit the same term;
+        # index_map carries spans back to offsets in the original text.
+        if self._normalize:
+            check, index_map = normalize_separators(check)
+        else:
+            index_map = list(range(len(check)))
         found: dict[str, list[tuple[int, int]]] = {}  # entity_id -> spans
 
         for variant, (eid, _display, _etype) in self._lookup.items():
@@ -155,7 +170,7 @@ class SchemaMatcher:
                 if before_ok and after_ok:
                     if eid not in found:
                         found[eid] = []
-                    found[eid].append((pos, after_pos))
+                    found[eid].append((index_map[pos], index_map[after_pos - 1] + 1))
                 start = pos + 1
 
         results = []
