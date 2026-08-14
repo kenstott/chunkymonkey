@@ -56,10 +56,16 @@ def release_indexer(namespace_id: str) -> None:
 
 
 class IndexHandle:
-    """Handle returned by index_source_async. Call .join() to wait for completion."""
+    """Handle returned by index_source_async. Call .join() to wait for completion.
+
+    A background build that dies leaves its exception here. Without it the only
+    signal is a traceback on stderr, so a caller that did not pass ``on_error``
+    cannot tell a failed run from a successful one.
+    """
 
     def __init__(self, thread: threading.Thread) -> None:
         self._thread = thread
+        self.error: BaseException | None = None
 
     def join(self, timeout: float | None = None) -> None:
         self._thread.join(timeout=timeout)
@@ -67,6 +73,16 @@ class IndexHandle:
     @property
     def running(self) -> bool:
         return self._thread.is_alive()
+
+    @property
+    def failed(self) -> bool:
+        """True once the background run has ended in an exception."""
+        return self.error is not None
+
+    def raise_if_failed(self) -> None:
+        """Re-raise the background failure in the calling thread, if any."""
+        if self.error is not None:
+            raise self.error
 
 
 class Indexer:
