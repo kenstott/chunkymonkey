@@ -20,6 +20,7 @@ Usage:
     python demo/graphrag_bench.py eval          --out-dir /tmp/grb --run-name <name>
     python demo/graphrag_bench.py report        --out-dir /tmp/grb
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,6 +41,7 @@ except ImportError:
 _PROJECT_ROOT = Path(__file__).parent.parent
 try:
     from dotenv import load_dotenv
+
     load_dotenv(_PROJECT_ROOT / ".env")
 except ImportError:
     pass
@@ -53,29 +55,30 @@ from chonk.storage._store import GLOBAL_NAMESPACE, Store
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-EMBED_MODEL        = "BAAI/bge-large-en-v1.5"
-EMBED_DIM          = 1024
-GEN_MODEL           = "gpt-4o-mini-2024-07-18"
-GEN_MODEL_TOGETHER  = "Qwen/Qwen2.5-72B-Instruct-Turbo"   # closest serverless Qwen2.5 (14B not available serverless on Together)
+EMBED_MODEL = "BAAI/bge-large-en-v1.5"
+EMBED_DIM = 1024
+GEN_MODEL = "gpt-4o-mini-2024-07-18"
+GEN_MODEL_TOGETHER = "Qwen/Qwen2.5-72B-Instruct-Turbo"  # closest serverless Qwen2.5 (14B not available serverless on Together)
 GEN_MODEL_ANTHROPIC = "claude-sonnet-4-6"
-TOGETHER_BASE_URL   = "https://api.together.xyz/v1"
-ANTHROPIC_BASE_URL  = "https://api.anthropic.com/v1"
-K             = 5
-K_FETCH       = 20    # candidates to retrieve before reranking (ignored when --rerank is off)
-RERANK_MODEL         = "BAAI/bge-reranker-large"       # local cross-encoder
-RERANK_MODEL_TOGETHER = "Salesforce/Llama-Rank-V1.1"   # Together AI reranker API
-RERANK_MODEL_COHERE  = "rerank-english-v3.0"           # Cohere reranker API
-SPACY_MODEL   = "en_core_web_sm"
-MIN_CHUNK     = 400
-MAX_CHUNK     = 1200
-DATASET_NAME  = "GraphRAG-Bench/GraphRAG-Bench"
-SUBSETS       = ["medical", "novel"]
-DB_FILENAME         = "chonk.duckdb"
+TOGETHER_BASE_URL = "https://api.together.xyz/v1"
+ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
+K = 5
+K_FETCH = 20  # candidates to retrieve before reranking (ignored when --rerank is off)
+RERANK_MODEL = "BAAI/bge-reranker-large"  # local cross-encoder
+RERANK_MODEL_TOGETHER = "Salesforce/Llama-Rank-V1.1"  # Together AI reranker API
+RERANK_MODEL_COHERE = "rerank-english-v3.0"  # Cohere reranker API
+SPACY_MODEL = "en_core_web_sm"
+MIN_CHUNK = 400
+MAX_CHUNK = 1200
+DATASET_NAME = "GraphRAG-Bench/GraphRAG-Bench"
+SUBSETS = ["medical", "novel"]
+DB_FILENAME = "chonk.duckdb"
 VANILLA_DB_FILENAME = "vanilla_rag.duckdb"
-VANILLA_K             = 5     # paper Appendix H.2: retrieval_topk=5
-VANILLA_CHUNK_TOKENS  = 256   # benchmark uses 256-token chunks
+VANILLA_K = 5  # paper Appendix H.2: retrieval_topk=5
+VANILLA_CHUNK_TOKENS = 256  # benchmark uses 256-token chunks
 VANILLA_CHUNK_OVERLAP = 0
-VANILLA_TEMPERATURE   = 0.7   # paper: "generation temperature of 0.7"
+VANILLA_TEMPERATURE = 0.7  # paper: "generation temperature of 0.7"
+
 
 def _model_rpm_limit(model: str) -> int:
     """Return 80%-of-tier-4 RPM limit for a given OpenAI model, loaded from openai_rpm_limits.json."""
@@ -86,28 +89,30 @@ def _model_rpm_limit(model: str) -> int:
     except Exception:
         return 2400
 
+
 # Published leaderboard results scraped from graphrag-bench.github.io, April 2026.
 # Avg = mean(Fact ACC, Reason ACC, Summ ACC, Creative ACC) for each subset.
 # Original scale is 0–100%; stored here as 0–1.
 # Published leaderboard uses gpt-4o-mini generator + gpt-4o-mini judge (answer_correctness metric).
 PUBLISHED_BASELINES = {
     # ── Top methods ───────────────────────────────────────────────────────────
-    "G-reasoner":               {"med_acc": 0.7330, "nov_acc": 0.5894, "overall": 0.6612},
-    "AutoPrunedRetriever-llm":  {"med_acc": 0.6700, "nov_acc": 0.6372, "overall": 0.6536},
-    "HippoRAG2":                {"med_acc": 0.6485, "nov_acc": 0.5648, "overall": 0.6067},
-    "Fast-GraphRAG":            {"med_acc": 0.6412, "nov_acc": 0.5202, "overall": 0.5807},
-    "LightRAG":                 {"med_acc": 0.6259, "nov_acc": 0.4509, "overall": 0.5384},
+    "G-reasoner": {"med_acc": 0.7330, "nov_acc": 0.5894, "overall": 0.6612},
+    "AutoPrunedRetriever-llm": {"med_acc": 0.6700, "nov_acc": 0.6372, "overall": 0.6536},
+    "HippoRAG2": {"med_acc": 0.6485, "nov_acc": 0.5648, "overall": 0.6067},
+    "Fast-GraphRAG": {"med_acc": 0.6412, "nov_acc": 0.5202, "overall": 0.5807},
+    "LightRAG": {"med_acc": 0.6259, "nov_acc": 0.4509, "overall": 0.5384},
     # ── Vanilla RAG baselines ─────────────────────────────────────────────────
-    "RAG (w/ rerank)":          {"med_acc": 0.6243, "nov_acc": 0.4835, "overall": 0.5539},
-    "RAG (w/o rerank)":         {"med_acc": 0.6100, "nov_acc": 0.4793, "overall": 0.5447},
+    "RAG (w/ rerank)": {"med_acc": 0.6243, "nov_acc": 0.4835, "overall": 0.5539},
+    "RAG (w/o rerank)": {"med_acc": 0.6100, "nov_acc": 0.4793, "overall": 0.5447},
     # ── Other methods ─────────────────────────────────────────────────────────
-    "RAPTOR":                   {"med_acc": 0.5710, "nov_acc": 0.4324, "overall": 0.5017},
-    "MS-GraphRAG (local)":      {"med_acc": 0.4516, "nov_acc": 0.5093, "overall": 0.4805},
+    "RAPTOR": {"med_acc": 0.5710, "nov_acc": 0.4324, "overall": 0.5017},
+    "MS-GraphRAG (local)": {"med_acc": 0.4516, "nov_acc": 0.5093, "overall": 0.4805},
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TOML config loading
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _deep_merge(base: dict, override: dict) -> dict:
     result = dict(base)
@@ -163,17 +168,27 @@ def _apply_config(cfg: dict, args: argparse.Namespace) -> None:
         args.enhanced = True
     if ret.get("entity_ref_expansion") and not getattr(args, "entity_ref_expansion", False):
         args.entity_ref_expansion = True
-    if ret.get("lane_entity_min_sim") is not None and getattr(args, "lane_entity_min_sim", None) is None:
+    if (
+        ret.get("lane_entity_min_sim") is not None
+        and getattr(args, "lane_entity_min_sim", None) is None
+    ):
         args.lane_entity_min_sim = ret["lane_entity_min_sim"]
-    if ret.get("redundancy_threshold") is not None and getattr(args, "redundancy_threshold", None) is None:
+    if (
+        ret.get("redundancy_threshold") is not None
+        and getattr(args, "redundancy_threshold", None) is None
+    ):
         args.redundancy_threshold = ret["redundancy_threshold"]
     if ret.get("cluster") and not getattr(args, "cluster", False):
         args.cluster = True
     if ret.get("context_graph") and not getattr(args, "context_graph", False):
         args.context_graph = True
-    if ret.get("context_graph_min_weight") is not None and getattr(args, "context_graph_min_weight", None) in (None, 0.1):
+    if ret.get("context_graph_min_weight") is not None and getattr(
+        args, "context_graph_min_weight", None
+    ) in (None, 0.1):
         args.context_graph_min_weight = ret["context_graph_min_weight"]
-    if ret.get("context_graph_top_k") is not None and getattr(args, "context_graph_top_k", None) in (None, 5):
+    if ret.get("context_graph_top_k") is not None and getattr(
+        args, "context_graph_top_k", None
+    ) in (None, 5):
         args.context_graph_top_k = ret["context_graph_top_k"]
     if ret.get("vanilla") and not getattr(args, "vanilla", False):
         args.vanilla = True
@@ -187,7 +202,10 @@ def _apply_config(cfg: dict, args: argparse.Namespace) -> None:
     comm = ret.get("community", {})
     if comm.get("enabled") and not getattr(args, "community_context", False):
         args.community_context = True
-    if comm.get("min_coherence") is not None and getattr(args, "community_min_coherence", None) is None:
+    if (
+        comm.get("min_coherence") is not None
+        and getattr(args, "community_min_coherence", None) is None
+    ):
         args.community_min_coherence = comm["min_coherence"]
 
     g = cfg.get("gen", {})
@@ -220,8 +238,7 @@ def _apply_config(cfg: dict, args: argparse.Namespace) -> None:
     sources = cfg.get("source", [])
     if sources and not getattr(args, "sources", None):
         args.sources = [
-            dict(entry, namespace=entry.get("namespace", GLOBAL_NAMESPACE))
-            for entry in sources
+            dict(entry, namespace=entry.get("namespace", GLOBAL_NAMESPACE)) for entry in sources
         ]
 
     if ret.get("namespaces") is not None and getattr(args, "namespaces", None) is None:
@@ -237,6 +254,7 @@ def _apply_config(cfg: dict, args: argparse.Namespace) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 1: Download
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def cmd_download(args: argparse.Namespace) -> None:
     out_dir = Path(args.out_dir)
@@ -261,7 +279,9 @@ def cmd_download(args: argparse.Namespace) -> None:
     repo_dir = out_dir / "GraphRAG-Benchmark"
     if not repo_dir.exists():
         print("\nCloning GraphRAG-Benchmark repo...")
-        ret = os.system(f"git clone --depth=1 https://github.com/GraphRAG-Bench/GraphRAG-Benchmark.git {repo_dir} 2>&1")
+        ret = os.system(
+            f"git clone --depth=1 https://github.com/GraphRAG-Bench/GraphRAG-Benchmark.git {repo_dir} 2>&1"
+        )
         if ret != 0:
             print("  WARNING: git clone failed — evaluation scripts unavailable")
     else:
@@ -273,6 +293,7 @@ def cmd_download(args: argparse.Namespace) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 1.5: Inspect
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _load_questions(data_dir: Path) -> list[dict]:
     questions = []
@@ -297,7 +318,7 @@ def _load_questions(data_dir: Path) -> list[dict]:
 
 
 def cmd_inspect(args: argparse.Namespace) -> None:
-    out_dir  = Path(args.out_dir)
+    out_dir = Path(args.out_dir)
     data_dir = out_dir / "data"
     repo_dir = out_dir / "GraphRAG-Benchmark"
 
@@ -308,7 +329,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 
     print(f"Total questions: {len(questions)}")
     by_subset = defaultdict(list)
-    by_type   = defaultdict(list)
+    by_type = defaultdict(list)
     for q in questions:
         by_subset[q.get("source", q.get("subset", "?"))].append(q)
         by_type[q.get("question_type", "?")].append(q)
@@ -322,7 +343,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 
     q = questions[0]
     print(f"\nRecord keys: {list(q.keys())}")
-    print(f"\nSample question ({q.get('source','?')} / {q.get('question_type','?')}):")
+    print(f"\nSample question ({q.get('source', '?')} / {q.get('question_type', '?')}):")
     print(f"  Q: {q['question'][:120]}")
     print(f"  A: {str(q['answer'])[:120]}")
     ev = q.get("evidence", [])
@@ -342,7 +363,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         for p in corpus_files[:20]:
             print(f"    {p.relative_to(repo_dir)}  ({p.stat().st_size:,} bytes)")
         if len(corpus_files) > 20:
-            print(f"    ... and {len(corpus_files)-20} more")
+            print(f"    ... and {len(corpus_files) - 20} more")
     else:
         print("  Datasets/ directory not found in cloned repo.")
 
@@ -353,7 +374,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
     for q in questions:
         for p in q.get("evidence", []):
             seen.add(str(p).strip())
-    print(f"    {len(seen):,} unique passages, ~{sum(len(s) for s in seen)//1000:,}K chars total")
+    print(f"    {len(seen):,} unique passages, ~{sum(len(s) for s in seen) // 1000:,}K chars total")
 
     if not corpus_files:
         print("\n  GATE: No raw corpus found. Will reconstruct from evidence passages.")
@@ -361,11 +382,11 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         print("\n  GATE: Source corpus available. Proceeding with full chunking.")
 
     info = {
-        "n_questions":   len(questions),
-        "by_subset":     {k: len(v) for k, v in by_subset.items()},
-        "by_type":       {k: len(v) for k, v in by_type.items()},
-        "corpus_files":  [str(p) for p in corpus_files],
-        "n_evidence":    len(seen),
+        "n_questions": len(questions),
+        "by_subset": {k: len(v) for k, v in by_subset.items()},
+        "by_type": {k: len(v) for k, v in by_type.items()},
+        "corpus_files": [str(p) for p in corpus_files],
+        "n_evidence": len(seen),
         "corpus_source": "repo" if corpus_files else "evidence_reconstruction",
     }
     (out_dir / "corpus_info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
@@ -376,13 +397,17 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 # Corpus builder (shared)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _table_exists(con, table_name: str) -> bool:
     """Return True if *table_name* exists in the connected DuckDB."""
     try:
-        return con.execute(
-            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
-            [table_name],
-        ).fetchone()[0] > 0
+        return (
+            con.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+                [table_name],
+            ).fetchone()[0]
+            > 0
+        )
     except Exception:
         return False
 
@@ -393,12 +418,13 @@ def _build_corpus(out_dir: Path) -> list[tuple[str, str]]:
     if not info_file.exists():
         raise RuntimeError("Run 'inspect' first.")
 
-    info     = json.loads(info_file.read_text())
+    info = json.loads(info_file.read_text())
     data_dir = out_dir / "data"
 
     if info["corpus_source"] == "repo" and info["corpus_files"]:
-        corpus_files = [Path(p) for p in info["corpus_files"]
-                        if "Corpus" in p and p.endswith(".json")]
+        corpus_files = [
+            Path(p) for p in info["corpus_files"] if "Corpus" in p and p.endswith(".json")
+        ]
         docs = []
         for path in corpus_files:
             if not path.exists():
@@ -433,17 +459,19 @@ def _build_corpus(out_dir: Path) -> list[tuple[str, str]]:
 # Naive chunker (vanilla RAG baseline)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _naive_chunks(text: str,
-                  chunk_tokens: int = VANILLA_CHUNK_TOKENS,
-                  overlap_tokens: int = VANILLA_CHUNK_OVERLAP) -> list[str]:
+
+def _naive_chunks(
+    text: str, chunk_tokens: int = VANILLA_CHUNK_TOKENS, overlap_tokens: int = VANILLA_CHUNK_OVERLAP
+) -> list[str]:
     """Split text into fixed-size token chunks with overlap using BGE BERT tokenizer."""
     from transformers import AutoTokenizer
+
     enc = AutoTokenizer.from_pretrained(EMBED_MODEL)
     tokens = enc.encode(text, add_special_tokens=False)
     step = max(1, chunk_tokens - overlap_tokens)
     result = []
     for start in range(0, len(tokens), step):
-        chunk = enc.decode(tokens[start:start + chunk_tokens])
+        chunk = enc.decode(tokens[start : start + chunk_tokens])
         if chunk.strip():
             result.append(chunk)
     return result
@@ -457,16 +485,17 @@ def _naive_chunks(text: str,
 def cmd_build_ner(args: argparse.Namespace) -> None:
     """Run NER on an existing index and persist chunk_entities to DB."""
     data_dir = Path(args.out_dir) / "data"
-    db_path  = data_dir / args.db_name
-    force    = getattr(args, "force", False)
+    db_path = data_dir / args.db_name
+    force = getattr(args, "force", False)
     if not db_path.exists():
         raise FileNotFoundError(f"Index DB not found: {db_path}")
 
     use_schema_vocab = getattr(args, "with_schema_vocab", False)
-    vocab_entities   = getattr(args, "vocab_entities", None)
+    vocab_entities = getattr(args, "vocab_entities", None)
 
     with_context_graph = getattr(args, "with_context_graph", False)
     from chonk.ner import build_ner
+
     with Store(db_path, embedding_dim=EMBED_DIM) as store:
         n_written = build_ner(
             store,
@@ -484,6 +513,7 @@ def cmd_build_ner(args: argparse.Namespace) -> None:
     with_embeddings = getattr(args, "with_embeddings", False)
     if with_embeddings:
         import duckdb as _ddb
+
         _con = _ddb.connect(str(db_path), read_only=True)
         try:
             ne = _con.execute("SELECT COUNT(*) FROM entity_embeddings").fetchone()[0]
@@ -494,6 +524,7 @@ def cmd_build_ner(args: argparse.Namespace) -> None:
             print(f"entity_embeddings already populated ({ne:,} rows) — skipping.")
         else:
             from sentence_transformers import SentenceTransformer
+
             embed_model = SentenceTransformer(EMBED_MODEL)
             entity_index = _load_entity_index_from_db(db_path)
             _build_and_persist_entity_embeddings(entity_index, embed_model, db_path)
@@ -507,13 +538,15 @@ def cmd_index(args: argparse.Namespace) -> None:
 
     from chonk.storage._vector import prune_documents, sync_document
 
-    out_dir  = Path(args.out_dir)
+    out_dir = Path(args.out_dir)
     data_dir = out_dir / "data"
     embed_content_only = getattr(args, "embed_content_only", False)
-    include_doc_name   = getattr(args, "include_doc_name", False)
-    min_chunk = getattr(args, 'min_chunk', MIN_CHUNK) or MIN_CHUNK
-    max_chunk = getattr(args, 'max_chunk', MAX_CHUNK) or MAX_CHUNK
-    size_suffix = f"_{min_chunk}_{max_chunk}" if (min_chunk != MIN_CHUNK or max_chunk != MAX_CHUNK) else ""
+    include_doc_name = getattr(args, "include_doc_name", False)
+    min_chunk = getattr(args, "min_chunk", MIN_CHUNK) or MIN_CHUNK
+    max_chunk = getattr(args, "max_chunk", MAX_CHUNK) or MAX_CHUNK
+    size_suffix = (
+        f"_{min_chunk}_{max_chunk}" if (min_chunk != MIN_CHUNK or max_chunk != MAX_CHUNK) else ""
+    )
     if embed_content_only:
         base = "chonk_nobc"
     elif include_doc_name:
@@ -552,7 +585,11 @@ def cmd_index(args: argparse.Namespace) -> None:
                 if domain_id:
                     store.register_domain(domain_id, namespace_id, domain)
                 if source_id:
-                    src_config = {k: v for k, v in src.items() if k not in ("namespace", "domain", "type", "uri")}
+                    src_config = {
+                        k: v
+                        for k, v in src.items()
+                        if k not in ("namespace", "domain", "type", "uri")
+                    }
                     store.register_source(source_id, domain_id, src_type, uri, src_config or None)
                 for doc_id in corpus_doc_names:
                     if uri and doc_id.startswith(uri):
@@ -591,7 +628,8 @@ def cmd_index(args: argparse.Namespace) -> None:
                     strip_isolated_letters=True,
                 )
             chunks = chunk_document(
-                doc_id, promoted,
+                doc_id,
+                promoted,
                 min_chunk_size=min_chunk,
                 max_chunk_size=max_chunk,
                 include_breadcrumb=True,
@@ -601,17 +639,25 @@ def cmd_index(args: argparse.Namespace) -> None:
             chunks = enrich_chunks(chunks)
 
             texts = [
-                c.content if embed_content_only else (c.embedding_content if c.embedding_content else c.content)
+                c.content
+                if embed_content_only
+                else (c.embedding_content if c.embedding_content else c.content)
                 for c in chunks
             ]
             batch_size = 256
             doc_vecs = []
             for i in range(0, len(texts), batch_size):
-                vecs = model.encode(texts[i:i + batch_size], show_progress_bar=False, normalize_embeddings=True)
+                vecs = model.encode(
+                    texts[i : i + batch_size], show_progress_bar=False, normalize_embeddings=True
+                )
                 doc_vecs.append(vecs)
-            emb = np.vstack(doc_vecs).astype("float32") if doc_vecs else np.empty((0, EMBED_DIM), dtype="float32")
+            emb = (
+                np.vstack(doc_vecs).astype("float32")
+                if doc_vecs
+                else np.empty((0, EMBED_DIM), dtype="float32")
+            )
 
-            ns  = source_ns_map.get(doc_id)
+            ns = source_ns_map.get(doc_id)
             sid = source_sid_map.get(doc_id)
             did = source_did_map.get(doc_id)
             store.add_document(chunks, emb, namespace=ns, source_id=sid, domain_id=did)
@@ -638,8 +684,7 @@ def cmd_index(args: argparse.Namespace) -> None:
 
     # Populate entity descriptions from DB schema chunks (source='schema').
     # Table/column comments extracted at crawl time — free, no LLM needed.
-    _SCHEMA_CHUNK_TYPES = {"db_table", "db_column", "api_endpoint",
-                           "api_graphql_type", "api_field"}
+    _SCHEMA_CHUNK_TYPES = {"db_table", "db_column", "api_endpoint", "api_graphql_type", "api_field"}
     schema_chunks = [c for c in all_chunks_for_schema if c.chunk_type in _SCHEMA_CHUNK_TYPES]
     if schema_chunks:
         with Store(db_path, embedding_dim=EMBED_DIM) as _sd_store:
@@ -671,6 +716,7 @@ def cmd_index(args: argparse.Namespace) -> None:
 def _corpus_from_store(store_db: str) -> list[tuple[str, str]]:
     """Read document texts from an existing Store DB, grouped by document_name."""
     import duckdb
+
     con = duckdb.connect(store_db, read_only=True)
     rows = con.execute(
         "SELECT document_name, content FROM embeddings ORDER BY document_name, chunk_index"
@@ -689,9 +735,9 @@ def cmd_index_vanilla(args: argparse.Namespace) -> None:
 
     from chonk.models import DocumentChunk
 
-    out_dir  = Path(args.out_dir)
+    out_dir = Path(args.out_dir)
     data_dir = out_dir / "data"
-    chunk_tokens = getattr(args, 'chunk_tokens', VANILLA_CHUNK_TOKENS) or VANILLA_CHUNK_TOKENS
+    chunk_tokens = getattr(args, "chunk_tokens", VANILLA_CHUNK_TOKENS) or VANILLA_CHUNK_TOKENS
     db_suffix = f"_{chunk_tokens}" if chunk_tokens != VANILLA_CHUNK_TOKENS else ""
     db_path = data_dir / f"vanilla_rag{db_suffix}.duckdb"
 
@@ -717,13 +763,15 @@ def cmd_index_vanilla(args: argparse.Namespace) -> None:
     all_chunks: list[DocumentChunk] = []
     for doc_id, text in corpus:
         for i, chunk_text in enumerate(_naive_chunks(text, chunk_tokens=chunk_tokens)):
-            all_chunks.append(DocumentChunk(
-                document_name=doc_id,
-                chunk_index=i,
-                content=chunk_text,
-                breadcrumb="",
-                embedding_content=chunk_text,
-            ))
+            all_chunks.append(
+                DocumentChunk(
+                    document_name=doc_id,
+                    chunk_index=i,
+                    content=chunk_text,
+                    breadcrumb="",
+                    embedding_content=chunk_text,
+                )
+            )
 
     print(f"Total vanilla chunks: {len(all_chunks):,}")
     avg = sum(len(c.content) for c in all_chunks) / max(1, len(all_chunks))
@@ -736,8 +784,8 @@ def cmd_index_vanilla(args: argparse.Namespace) -> None:
     batch_size = 256
     embeddings = []
     for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        vecs  = model.encode(batch, show_progress_bar=False, normalize_embeddings=True)
+        batch = texts[i : i + batch_size]
+        vecs = model.encode(batch, show_progress_bar=False, normalize_embeddings=True)
         embeddings.append(vecs)
         done = min(i + batch_size, len(texts))
         if (i // batch_size) % 10 == 0:
@@ -758,11 +806,20 @@ def cmd_index_vanilla(args: argparse.Namespace) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _REFUSAL_PHRASES = (
-    "does not contain", "does not provide", "does not mention",
-    "cannot determine", "cannot answer", "not enough information",
-    "insufficient information", "not mentioned", "no information",
-    "context does not", "not specified", "not stated",
+    "does not contain",
+    "does not provide",
+    "does not mention",
+    "cannot determine",
+    "cannot answer",
+    "not enough information",
+    "insufficient information",
+    "not mentioned",
+    "no information",
+    "context does not",
+    "not specified",
+    "not stated",
 )
+
 
 def _format_breadcrumb(crumb: str, style: str = "markdown") -> str:
     """Convert [doc > sec > subsec] to various heading formats.
@@ -779,12 +836,12 @@ def _format_breadcrumb(crumb: str, style: str = "markdown") -> str:
         return crumb
     if style == "literal":
         labels = ["Document", "Section", "Subsection", "Topic"]
-        return ". ".join(
-            f"{labels[min(i, len(labels)-1)]}: {p}" for i, p in enumerate(parts)
-        ) + "."
+        return (
+            ". ".join(f"{labels[min(i, len(labels) - 1)]}: {p}" for i, p in enumerate(parts)) + "."
+        )
     # markdown (default)
     levels = ["##", "###", "####", "#####"]
-    return "\n".join(f"{levels[min(i, len(levels)-1)]} {p}" for i, p in enumerate(parts))
+    return "\n".join(f"{levels[min(i, len(levels) - 1)]} {p}" for i, p in enumerate(parts))
 
 
 def _is_refusal(answer: str) -> bool:
@@ -808,7 +865,7 @@ _STRUCTURED_GEN_RETRY_HINT = (
 _SRR_GEN_SYSTEM = (
     "Answer the question using only information from the provided context.\n"
     "You MUST respond with valid JSON in exactly this format — no other text:\n"
-    '{\n'
+    "{\n"
     '  "answer": "<prose answer suitable for the reader>",\n'
     '  "key_claims": ["<discrete claim 1>", "<discrete claim 2>"],\n'
     '  "evidence_used": ["<verbatim quote or close paraphrase from context>"]\n'
@@ -840,13 +897,15 @@ _VANILLA_GEN_PROMPT = (
     "Answer:"
 )
 
+
 def _extract_structured_answer(text: str) -> str | None:
     """Extract content after 'ANSWER:' marker. Returns None if marker absent."""
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.upper().startswith("ANSWER:"):
-            return stripped[len("ANSWER:"):].strip()
+            return stripped[len("ANSWER:") :].strip()
     return None
+
 
 _DECOMPOSE_PROMPT = """\
 You are a retrieval query planner. Break the following question into exactly 3 focused sub-queries \
@@ -859,9 +918,7 @@ Question: {question}
 Sub-queries (JSON array of 3 strings):"""
 
 
-def _decompose_question(
-    question: str, question_type: str, client, model: str
-) -> list[str]:
+def _decompose_question(question: str, question_type: str, client, model: str) -> list[str]:
     """Return 3 targeted sub-queries for multi-step retrieval. Falls back to [question] on failure."""
     import json as _json
     import re as _re
@@ -879,7 +936,7 @@ def _decompose_question(
         try:
             subs = _json.loads(text)
         except _json.JSONDecodeError:
-            m = _re.search(r'\[.*?\]', text, _re.DOTALL)
+            m = _re.search(r"\[.*?\]", text, _re.DOTALL)
             subs = _json.loads(m.group(0)) if m else []
         if isinstance(subs, list) and len(subs) >= 2:
             return [str(s).strip() for s in subs if str(s).strip()][:4]
@@ -896,10 +953,12 @@ _SRR_CLAUDE_SUFFIX = (
 )
 
 
-def _generate_srr(question: str, context: str, client, model: str,
-                  temperature: float = 0.0) -> dict:
+def _generate_srr(
+    question: str, context: str, client, model: str, temperature: float = 0.0
+) -> dict:
     """Generate a structured response for SRR. Returns dict with answer/key_claims/evidence_used."""
     import json as _json
+
     system = _SRR_GEN_SYSTEM + (_SRR_CLAUDE_SUFFIX if "claude" in model.lower() else "")
     user_content = f"Context:\n{context}\n\nQuestion: {question}"
     raw = ""
@@ -909,7 +968,7 @@ def _generate_srr(question: str, context: str, client, model: str,
             model=model,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user",   "content": prompt},
+                {"role": "user", "content": prompt},
             ],
             temperature=temperature,
             max_tokens=700,
@@ -924,9 +983,11 @@ def _generate_srr(question: str, context: str, client, model: str,
             obj = _json.loads(raw)
             if isinstance(obj.get("answer"), str):
                 return {
-                    "answer":       obj["answer"],
-                    "key_claims":   [x for x in obj.get("key_claims", []) if isinstance(x, str)],
-                    "evidence_used": [x for x in obj.get("evidence_used", []) if isinstance(x, str)],
+                    "answer": obj["answer"],
+                    "key_claims": [x for x in obj.get("key_claims", []) if isinstance(x, str)],
+                    "evidence_used": [
+                        x for x in obj.get("evidence_used", []) if isinstance(x, str)
+                    ],
                 }
         except Exception:
             pass
@@ -944,27 +1005,35 @@ def _srr_gap_fill(
 ) -> str:
     """Retrieve chunks for uncovered entities and return augmented context."""
     import numpy as _np
+
     if not uncovered_entities or not chunk_pool:
         return existing_context
-    ent_vecs = embed_model.encode(uncovered_entities, normalize_embeddings=True,
-                                  show_progress_bar=False)
+    ent_vecs = embed_model.encode(
+        uncovered_entities, normalize_embeddings=True, show_progress_bar=False
+    )
     pool_texts = [t for _, t, _ in chunk_pool]
-    pool_vecs  = _np.array([v for _, _, v in chunk_pool], dtype=_np.float32)
+    pool_vecs = _np.array([v for _, _, v in chunk_pool], dtype=_np.float32)
     # Score each chunk against all uncovered entities (max similarity)
-    sims = ent_vecs @ pool_vecs.T          # (n_ents, n_chunks)
-    chunk_scores = sims.max(axis=0)        # (n_chunks,)
+    sims = ent_vecs @ pool_vecs.T  # (n_ents, n_chunks)
+    chunk_scores = sims.max(axis=0)  # (n_chunks,)
     top_idx = _np.argsort(chunk_scores)[::-1][:top_k]
-    new_chunks = [pool_texts[i] for i in top_idx
-                  if pool_texts[i] not in existing_context]
+    new_chunks = [pool_texts[i] for i in top_idx if pool_texts[i] not in existing_context]
     if not new_chunks:
         return existing_context
     addition = "\n\n---\n".join(new_chunks)
     return existing_context + f"\n\n[Additional context]\n{addition}"
 
 
-def _generate(question: str, context: str, client, model: str = GEN_MODEL,
-              temperature: float = 0.0, retry_hint: str | None = None,
-              structured: bool = False, vanilla: bool = False) -> str:
+def _generate(
+    question: str,
+    context: str,
+    client,
+    model: str = GEN_MODEL,
+    temperature: float = 0.0,
+    retry_hint: str | None = None,
+    structured: bool = False,
+    vanilla: bool = False,
+) -> str:
     if vanilla:
         user_content = _VANILLA_GEN_PROMPT.format(context=context, question=question)
         if retry_hint:
@@ -1020,8 +1089,14 @@ def _build_entity_index_from_store(
     """Run NER on all chunks in store and return a populated EntityIndex."""
     from chonk.ner import EntityIndex, SpacyLabel, SpacyMatcher
     from chonk.storage._vector import DuckDBVectorBackend
-    _NUMERIC_TYPES = {SpacyLabel.CARDINAL, SpacyLabel.ORDINAL, SpacyLabel.MONEY,
-                      SpacyLabel.PERCENT, SpacyLabel.QUANTITY}
+
+    _NUMERIC_TYPES = {
+        SpacyLabel.CARDINAL,
+        SpacyLabel.ORDINAL,
+        SpacyLabel.MONEY,
+        SpacyLabel.PERCENT,
+        SpacyLabel.QUANTITY,
+    }
     _label_types = [t for t in SpacyLabel if t not in _NUMERIC_TYPES]
     print(f"Building EntityIndex with SpacyMatcher({SPACY_MODEL})...")
     matcher = SpacyMatcher(model=SPACY_MODEL, strip_numeric=True, entity_types=_label_types)
@@ -1032,43 +1107,47 @@ def _build_entity_index_from_store(
     schema_matcher = None
     if use_schema_vocab or vocab_entities:
         from chonk.ner import SchemaVocabBuilder
+
         builder = SchemaVocabBuilder()
         if use_schema_vocab:
             builder.add_chunks(all_chunks)
-            print(f"  SchemaVocab: {builder.table_count():,} tables, {builder.column_count():,} columns, {builder.api_term_count():,} API terms")
-        for entry in (vocab_entities or []):
-            etype = entry.get("entity_type", "term")
-            ns = entry.get("namespace")
-            if entry.get("type") == "static":
-                names = entry.get("names", [])
-                builder.add_entities(names, entity_type=etype, namespace=ns)
-                print(f"  VocabEntities static: {len(names):,} {etype!r} names [ns={ns or 'global'}]")
-            elif entry.get("type") == "glossary":
-                names = entry.get("names", [])
-                builder.add_business_terms(names, namespace=ns)
-                print(f"  VocabEntities glossary: {len(names):,} terms [ns={ns or 'global'}]")
-            elif entry.get("type") == "db_query":
-                conn_url = entry["connection"]
-                sql = entry["sql"]
-                builder.add_from_db(conn_url, {etype: sql}, namespace=ns)
-                print(f"  VocabEntities db_query: {etype!r} from {conn_url!r} [ns={ns or 'global'}]")
+            print(
+                f"  SchemaVocab: {builder.table_count():,} tables, {builder.column_count():,} columns, {builder.api_term_count():,} API terms"
+            )
+        # Shared with build_ner so validation cannot drift between the two paths.
+        from chonk.ner._build import _add_vocab_entry
+
+        for i, entry in enumerate(vocab_entities or []):
+            _add_vocab_entry(builder, entry, i)
+            ns = entry.get("namespace") or "global"
+            kind = entry.get("type")
+            detail = (
+                entry.get("connection")
+                if kind == "db_query"
+                else f"{len(entry.get('names') or []):,} names"
+            )
+            print(f"  VocabEntities {kind}: {detail} [ns={ns}]")
         schema_matcher = builder.build()
         data_matcher = builder.build_data_matcher() if builder.data_term_count() > 0 else None
     else:
         data_matcher = None
 
     chunks_to_process = [
-        c for c in all_chunks
+        c
+        for c in all_chunks
         if (lambda cid: cid not in (skip_chunk_ids or set()))(
             DuckDBVectorBackend._generate_chunk_id(
-                c.document_name, c.chunk_index,
-                c.embedding_content if c.embedding_content else c.content
+                c.document_name,
+                c.chunk_index,
+                c.embedding_content if c.embedding_content else c.content,
             )
         )
     ]
     skipped = len(all_chunks) - len(chunks_to_process)
     if skipped:
-        print(f"  Incremental: {skipped:,} chunks already processed, {len(chunks_to_process):,} new")
+        print(
+            f"  Incremental: {skipped:,} chunks already processed, {len(chunks_to_process):,} new"
+        )
     print(f"  Running NER on {len(chunks_to_process):,} chunks...")
     for chunk in chunks_to_process:
         embed_content = chunk.embedding_content if chunk.embedding_content else chunk.content
@@ -1077,19 +1156,22 @@ def _build_entity_index_from_store(
         )
         if schema_matcher is not None or data_matcher is not None:
             from chonk.ner import merge_matches
+
             vocab_hits: list = []
             if schema_matcher is not None:
                 vocab_hits = merge_matches(
-                    schema_matcher.match(chunk.content), vocab_hits,
+                    schema_matcher.match(chunk.content),
+                    vocab_hits,
                     source_text=chunk.content,
                 )
             if data_matcher is not None:
                 vocab_hits = merge_matches(
-                    data_matcher.match(chunk.content), vocab_hits,
+                    data_matcher.match(chunk.content),
+                    vocab_hits,
                     source_text=chunk.content,
                 )
             spacy_hits = matcher.match(chunk.content)
-            combined   = merge_matches(vocab_hits, spacy_hits, source_text=chunk.content)
+            combined = merge_matches(vocab_hits, spacy_hits, source_text=chunk.content)
             entity_index.index_chunk(chunk_id, chunk.content, combined)
         else:
             entity_index.run_ner(chunk_id, chunk.content, matcher)
@@ -1115,7 +1197,14 @@ def _persist_entity_index(entity_index, db_path: Path, *, incremental: bool = Fa
         namespace = ns_row[0] if ns_row else None
         con.execute(
             "INSERT OR REPLACE INTO chunk_entities(chunk_id, entity_id, frequency, positions_json, score, namespace) VALUES (?,?,?,?,?,?)",
-            [a["chunk_id"], a["entity_id"], a["frequency"], json.dumps(a["positions"]), a["score"], namespace],
+            [
+                a["chunk_id"],
+                a["entity_id"],
+                a["frequency"],
+                json.dumps(a["positions"]),
+                a["score"],
+                namespace,
+            ],
         )
         con.execute(
             "INSERT OR IGNORE INTO entities(id, name, display_name) VALUES (?,?,?)",
@@ -1160,10 +1249,10 @@ def cmd_build_community(args: argparse.Namespace) -> None:
     from chonk.storage._store import Store
 
     data_dir = Path(args.out_dir) / "data"
-    db_path  = data_dir / args.db_name
-    alpha    = getattr(args, "alpha", 0.2)
+    db_path = data_dir / args.db_name
+    alpha = getattr(args, "alpha", 0.2)
     sim_threshold = getattr(args, "sim_threshold", 0.6)
-    force    = getattr(args, "force", False)
+    force = getattr(args, "force", False)
     label_strategy = getattr(args, "community_label_strategy", "ner_embedding")
     domain_ids = getattr(args, "domain_ids", None)
 
@@ -1185,7 +1274,9 @@ def cmd_build_community(args: argparse.Namespace) -> None:
             n = con.execute("SELECT COUNT(*) FROM chunk_communities").fetchone()[0]
             con.close()
             if n > 0:
-                print(f"chunk_communities already populated ({n:,} rows) — skipping. Use --force to rebuild.")
+                print(
+                    f"chunk_communities already populated ({n:,} rows) — skipping. Use --force to rebuild."
+                )
                 return
         except Exception:
             con.close()
@@ -1228,6 +1319,7 @@ def cmd_build_community(args: argparse.Namespace) -> None:
     extra_edges: list[tuple[int, int, float]] = []
     try:
         import duckdb as _duckdb
+
         _con_er = _duckdb.connect(str(db_path), read_only=True)
         _ce_rows = _con_er.execute(
             "SELECT entity_id, chunk_id FROM chunk_entities WHERE frequency > 0"
@@ -1235,6 +1327,7 @@ def cmd_build_community(args: argparse.Namespace) -> None:
         _con_er.close()
         if _ce_rows:
             from collections import defaultdict as _dd
+
             id_to_idx = {cid: i for i, cid in enumerate(chunk_ids)}
             entity_to_chunks: dict[str, list[int]] = _dd(list)
             for eid, cid in _ce_rows:
@@ -1256,11 +1349,15 @@ def cmd_build_community(args: argparse.Namespace) -> None:
                                 seen.add(key)
                                 extra_edges.append((ia, ib, 1.0))
                                 bridge_count += 1
-            print(f"  Entity bridge: {bridge_count:,} cross-document edges from {len(entity_to_chunks)} entities (chunk_entities)")
+            print(
+                f"  Entity bridge: {bridge_count:,} cross-document edges from {len(entity_to_chunks)} entities (chunk_entities)"
+            )
     except Exception as _e:
         print(f"  Entity bridge skipped: {_e}")
 
-    print(f"  Building community index (sim_threshold={sim_threshold}, label_strategy={label_strategy})...")
+    print(
+        f"  Building community index (sim_threshold={sim_threshold}, label_strategy={label_strategy})..."
+    )
     idx = CommunityIndex.build(
         chunk_ids=chunk_ids,
         content_vecs=content_vecs,
@@ -1276,6 +1373,7 @@ def cmd_build_community(args: argparse.Namespace) -> None:
 
     # Persist — retry with backoff if DB is locked by another process
     import time as _time
+
     for _attempt in range(60):
         try:
             idx.persist(db_path)
@@ -1283,7 +1381,7 @@ def cmd_build_community(args: argparse.Namespace) -> None:
             break
         except Exception as _e:
             if "lock" in str(_e).lower() or "conflict" in str(_e).lower():
-                print(f"  DB locked, waiting 10s... (attempt {_attempt+1}/60)", flush=True)
+                print(f"  DB locked, waiting 10s... (attempt {_attempt + 1}/60)", flush=True)
                 _time.sleep(10)
             else:
                 raise
@@ -1292,7 +1390,7 @@ def cmd_build_community(args: argparse.Namespace) -> None:
 
     # Generate LLM community summaries and embed + store as community_summary chunks
     gen_provider = getattr(args, "gen_provider", None)
-    gen_model    = getattr(args, "gen_model", GEN_MODEL)
+    gen_model = getattr(args, "gen_model", GEN_MODEL)
     if gen_provider:
         import numpy as np
         import openai as _oai
@@ -1306,8 +1404,10 @@ def cmd_build_community(args: argparse.Namespace) -> None:
             )
         elif gen_provider == "anthropic":
             _c_client = _oai.OpenAI(
-                api_key=os.environ["ANTHROPIC_API_KEY"], base_url=ANTHROPIC_BASE_URL,
-                default_headers={"anthropic-version": "2023-06-01"}, timeout=120.0,
+                api_key=os.environ["ANTHROPIC_API_KEY"],
+                base_url=ANTHROPIC_BASE_URL,
+                default_headers={"anthropic-version": "2023-06-01"},
+                timeout=120.0,
             )
         else:
             _c_client = _oai.OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=60.0)
@@ -1334,17 +1434,19 @@ def cmd_build_community(args: argparse.Namespace) -> None:
         if summary_chunks:
             embed_model = SentenceTransformer(EMBED_MODEL)
             texts = [c.content for c in summary_chunks]
-            vecs = embed_model.encode(texts, normalize_embeddings=True,
-                                      show_progress_bar=False, batch_size=256).astype("float32")
+            vecs = embed_model.encode(
+                texts, normalize_embeddings=True, show_progress_bar=False, batch_size=256
+            ).astype("float32")
             with Store(db_path, embedding_dim=EMBED_DIM) as _sum_store:
                 # Remove stale summaries before reinserting
                 _sum_store.vector._conn.execute(
                     "DELETE FROM embeddings WHERE chunk_type = 'community_summary'"
                 )
-                _sum_store.add_document(summary_chunks, vecs,
-                                        session_fingerprint=Store.session_fingerprint(
-                                            domain_ids or ["__all__"]
-                                        ))
+                _sum_store.add_document(
+                    summary_chunks,
+                    vecs,
+                    session_fingerprint=Store.session_fingerprint(domain_ids or ["__all__"]),
+                )
             print(f"  Community summaries embedded and stored → {db_path}")
 
     # Write community cache entry when domain-scoped
@@ -1364,13 +1466,13 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
     from chonk.graph import RelationshipIndex, SVOExtractor
 
     data_dir = Path(args.out_dir) / "data"
-    db_name  = getattr(args, "db_name", None) or DB_FILENAME
-    db_path  = data_dir / db_name
-    force       = getattr(args, "force", False)
-    gen_model   = getattr(args, "gen_model", GEN_MODEL)
+    db_name = getattr(args, "db_name", None) or DB_FILENAME
+    db_path = data_dir / db_name
+    force = getattr(args, "force", False)
+    gen_model = getattr(args, "gen_model", GEN_MODEL)
     gen_provider = getattr(args, "gen_provider", "openai")
     concurrency = getattr(args, "concurrency", 4)
-    max_chunks  = getattr(args, "max_chunks", None)
+    max_chunks = getattr(args, "max_chunks", None)
 
     if not db_path.exists():
         raise FileNotFoundError(f"Index DB not found: {db_path}")
@@ -1391,7 +1493,9 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
     else:
         n = _init_con.execute("SELECT COUNT(*) FROM svo_triples").fetchone()[0]
         if n > 0:
-            print(f"svo_triples has {n:,} rows — will resume from checkpoint. Use --force to rebuild.")
+            print(
+                f"svo_triples has {n:,} rows — will resume from checkpoint. Use --force to rebuild."
+            )
     _init_con.close()
 
     import httpx as _httpx
@@ -1401,25 +1505,30 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
 
     if gen_provider == "together":
         _oai_client = _oai.OpenAI(
-            api_key=os.environ["TOGETHER_API_KEY"], base_url=TOGETHER_BASE_URL,
+            api_key=os.environ["TOGETHER_API_KEY"],
+            base_url=TOGETHER_BASE_URL,
             timeout=_svo_timeout,
         )
     elif gen_provider == "anthropic":
         _oai_client = _oai.OpenAI(
-            api_key=os.environ["ANTHROPIC_API_KEY"], base_url=ANTHROPIC_BASE_URL,
-            default_headers={"anthropic-version": "2023-06-01"}, timeout=_svo_timeout,
+            api_key=os.environ["ANTHROPIC_API_KEY"],
+            base_url=ANTHROPIC_BASE_URL,
+            default_headers={"anthropic-version": "2023-06-01"},
+            timeout=_svo_timeout,
         )
     else:
         _oai_client = _oai.OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=60.0)
 
     import threading as _threading
     import time as _time
+
     _svo_log_lock = _threading.Lock()
 
     def _svo_log(msg: str) -> None:
         ts = _time.strftime("%H:%M:%S")
         with _svo_log_lock:
             import sys as _sys
+
             _sys.stderr.write(f"[svo {ts}] {msg}\n")
             _sys.stderr.flush()
 
@@ -1464,9 +1573,7 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
     """).fetchall()
 
     try:
-        desc_rows = con_ro.execute(
-            "SELECT id, COALESCE(description, '') FROM entities"
-        ).fetchall()
+        desc_rows = con_ro.execute("SELECT id, COALESCE(description, '') FROM entities").fetchall()
         existing_descriptions: dict[str, str] = {r[0]: r[1] for r in desc_rows if r[1]}
     except Exception:
         existing_descriptions = {}
@@ -1474,22 +1581,28 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
 
     # Index: chunk_id → [{id, type, description}]
     from collections import defaultdict as _defaultdict
+
     chunk_entities_map: dict[str, list[dict]] = _defaultdict(list)
     for chunk_id, entity_id, entity_type in chunk_entity_rows:
-        chunk_entities_map[chunk_id].append({
-            "id": entity_id,
-            "type": entity_type,
-            "description": existing_descriptions.get(entity_id, ""),
-        })
+        chunk_entities_map[chunk_id].append(
+            {
+                "id": entity_id,
+                "type": entity_type,
+                "description": existing_descriptions.get(entity_id, ""),
+            }
+        )
 
     # Load already-checkpointed chunk_ids for resume support
     _checkpointed_chunk_ids: set[str] = set()
     if not force:
         try:
             _ckpt_con = duckdb.connect(str(db_path), read_only=True)
-            _ckpt_con.execute("CREATE TABLE IF NOT EXISTS svo_triples (chunk_id VARCHAR, subject_id VARCHAR NOT NULL, verb VARCHAR NOT NULL, object_id VARCHAR NOT NULL, confidence FLOAT NOT NULL DEFAULT 1.0, namespace VARCHAR, description TEXT NOT NULL DEFAULT '')")
+            _ckpt_con.execute(
+                "CREATE TABLE IF NOT EXISTS svo_triples (chunk_id VARCHAR, subject_id VARCHAR NOT NULL, verb VARCHAR NOT NULL, object_id VARCHAR NOT NULL, confidence FLOAT NOT NULL DEFAULT 1.0, namespace VARCHAR, description TEXT NOT NULL DEFAULT '')"
+            )
             _checkpointed_chunk_ids = {
-                r[0] for r in _ckpt_con.execute(
+                r[0]
+                for r in _ckpt_con.execute(
                     "SELECT DISTINCT chunk_id FROM svo_triples WHERE chunk_id IS NOT NULL"
                 ).fetchall()
             }
@@ -1497,11 +1610,14 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
         except Exception:
             pass
 
-    chunks_with_entities = [(cid, content) for cid, content in rows
-                            if len(chunk_entities_map.get(cid, [])) >= 2
-                            and cid not in _checkpointed_chunk_ids]
-    chunks_without_entities = [(cid, content) for cid, content in rows
-                               if len(chunk_entities_map.get(cid, [])) < 2]
+    chunks_with_entities = [
+        (cid, content)
+        for cid, content in rows
+        if len(chunk_entities_map.get(cid, [])) >= 2 and cid not in _checkpointed_chunk_ids
+    ]
+    chunks_without_entities = [
+        (cid, content) for cid, content in rows if len(chunk_entities_map.get(cid, [])) < 2
+    ]
 
     if max_chunks is not None:
         chunks_with_entities = chunks_with_entities[:max_chunks]
@@ -1509,13 +1625,15 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
     print(f"Loaded {len(rows):,} chunks from {db_path}")
     if _checkpointed_chunk_ids:
         print(f"  Resuming: {len(_checkpointed_chunk_ids):,} chunks already checkpointed")
-    print(f"  {len(chunks_with_entities):,} chunks have ≥2 entities → entity-anchored extraction"
-          + (f" (capped at {max_chunks})" if max_chunks is not None else ""))
+    print(
+        f"  {len(chunks_with_entities):,} chunks have ≥2 entities → entity-anchored extraction"
+        + (f" (capped at {max_chunks})" if max_chunks is not None else "")
+    )
     print(f"  {len(chunks_without_entities):,} chunks have <2 entities → skipped")
 
     _CHECKPOINT_INTERVAL = 100
     _checkpoint_lock = _threading.Lock()
-    _pending_index = RelationshipIndex()      # triples since last checkpoint
+    _pending_index = RelationshipIndex()  # triples since last checkpoint
     _pending_descs: dict[str, str] = {}
     _pending_aliases: dict[str, list[str]] = {}
 
@@ -1544,13 +1662,16 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
     _progress_fh = None
     if progress_out:
         import sys as _sys
+
         _progress_fh = _sys.stdout if progress_out == "-" else open(progress_out, "w", buffering=1)
 
     def _extract_one(row):
         chunk_id, content = row
         entities = chunk_entities_map.get(chunk_id, [])
         n_ent = len(entities)
-        _svo_log(f"chunk start  chunk_id={chunk_id!r} entities={n_ent} content={len(content or ''):,}chars")
+        _svo_log(
+            f"chunk start  chunk_id={chunk_id!r} entities={n_ent} content={len(content or ''):,}chars"
+        )
         if n_ent >= 2:
             t0 = _time.monotonic()
             triples, descs, aliases, rel_descs = extractor.extract_entity_anchored(
@@ -1588,14 +1709,19 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
                     _flush_checkpoint()
             if _progress_fh is not None:
                 import json as _json
+
                 event = {
                     "done": done,
                     "total": total_chunks,
                     "chunk_id": chunk_id,
                     "triples": [
-                        {"subject_id": t.subject_id, "verb": t.verb,
-                         "object_id": t.object_id, "confidence": t.confidence,
-                         "description": t.description}
+                        {
+                            "subject_id": t.subject_id,
+                            "verb": t.verb,
+                            "object_id": t.object_id,
+                            "confidence": t.confidence,
+                            "description": t.description,
+                        }
                         for t in triples
                     ],
                     "descriptions": descs,
@@ -1603,13 +1729,15 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
                     "rel_descriptions": rel_descs,
                 }
                 _progress_fh.write(_json.dumps(event) + "\n")
-            _svo_log(f"progress     {done:,}/{total_chunks:,} total_triples={len(relationship_index):,}")
+            _svo_log(
+                f"progress     {done:,}/{total_chunks:,} total_triples={len(relationship_index):,}"
+            )
 
     if _progress_fh is not None and progress_out != "-":
         _progress_fh.close()
 
-
     from chonk.storage._store import Store as _Store
+
     # Flush any remaining pending triples
     with _checkpoint_lock:
         _flush_checkpoint()
@@ -1622,7 +1750,7 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
             break
         except Exception as _e:
             if "lock" in str(_e).lower() or "conflict" in str(_e).lower():
-                print(f"  DB locked, waiting 10s... (attempt {_attempt+1}/60)", flush=True)
+                print(f"  DB locked, waiting 10s... (attempt {_attempt + 1}/60)", flush=True)
                 _time.sleep(10)
             else:
                 raise
@@ -1637,9 +1765,7 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
     # Persist LLM-generated aliases (first-registration wins per alias/namespace)
     if new_aliases:
         flat_aliases = {
-            alias: eid
-            for eid, alias_list in new_aliases.items()
-            for alias in alias_list
+            alias: eid for eid, alias_list in new_aliases.items() for alias in alias_list
         }
         with _Store(db_path, embedding_dim=EMBED_DIM) as _alias_store:
             n_alias = _alias_store.add_entity_aliases_batch(flat_aliases, source="llm")
@@ -1652,6 +1778,7 @@ def cmd_build_svo(args: argparse.Namespace) -> None:
         import duckdb as _ddb
 
         from chonk.graph._context_graph import build_context_graph_edges
+
         _con = _ddb.connect(str(db_path))
         stats = build_context_graph_edges(_con, namespace="global", force=True)
         _con.close()
@@ -1681,13 +1808,18 @@ def _upsert_entity_chunk_embeddings(db_path: Path) -> None:
             return
 
         # Gather aliases per entity
-        alias_rows = con_ro.execute(
-            "SELECT entity_id, alias FROM entity_aliases WHERE namespace = 'global'"
-        ).fetchall() if _table_exists(con_ro, "entity_aliases") else []
+        alias_rows = (
+            con_ro.execute(
+                "SELECT entity_id, alias FROM entity_aliases WHERE namespace = 'global'"
+            ).fetchall()
+            if _table_exists(con_ro, "entity_aliases")
+            else []
+        )
     finally:
         con_ro.close()
 
     from collections import defaultdict as _dd
+
     aliases_map: dict[str, list[str]] = _dd(list)
     for eid, alias in alias_rows:
         aliases_map[eid].append(alias)
@@ -1703,12 +1835,14 @@ def _upsert_entity_chunk_embeddings(db_path: Path) -> None:
             parts.append(description)
         text = ". ".join(parts)
         texts.append(text)
-        chunks.append(DocumentChunk(
-            document_name=f"__entity__{entity_id}",
-            content=text,
-            chunk_index=0,
-            chunk_type="entity",
-        ))
+        chunks.append(
+            DocumentChunk(
+                document_name=f"__entity__{entity_id}",
+                content=text,
+                chunk_index=0,
+                chunk_type="entity",
+            )
+        )
 
     print(f"  Embedding {len(chunks):,} entities for semantic search...")
     embed_model = SentenceTransformer(EMBED_MODEL, device="cpu")
@@ -1730,13 +1864,13 @@ def cmd_build_context_graph(args: argparse.Namespace) -> None:
     from chonk.storage._store import Store
 
     data_dir = Path(args.out_dir) / "data"
-    db_name  = getattr(args, "db_name", None) or DB_FILENAME
-    db_path  = data_dir / db_name
-    force    = getattr(args, "force", False)
+    db_name = getattr(args, "db_name", None) or DB_FILENAME
+    db_path = data_dir / db_name
+    force = getattr(args, "force", False)
     namespace_arg = getattr(args, "namespace", "global")
     namespace = None if namespace_arg == "all" else namespace_arg
     min_weight = getattr(args, "min_weight", 0.1)
-    algorithm  = getattr(args, "algorithm", "agglomerative")
+    algorithm = getattr(args, "algorithm", "agglomerative")
     min_chunks = getattr(args, "min_chunks", 10)
 
     if not db_path.exists():
@@ -1744,7 +1878,9 @@ def cmd_build_context_graph(args: argparse.Namespace) -> None:
 
     print(f"Building context graph: {db_path}")
     ns_label = "all namespaces" if namespace is None else repr(namespace)
-    print(f"  namespace={ns_label}, min_weight={min_weight}, algorithm={algorithm!r}, min_chunks={min_chunks}")
+    print(
+        f"  namespace={ns_label}, min_weight={min_weight}, algorithm={algorithm!r}, min_chunks={min_chunks}"
+    )
 
     with Store(str(db_path), embedding_dim=EMBED_DIM) as store:
         result = store.build_context_graph(
@@ -1757,26 +1893,34 @@ def cmd_build_context_graph(args: argparse.Namespace) -> None:
 
     if isinstance(result, dict):
         for ns, stats in result.items():
-            print(f"  [{ns}] {stats.entity_count:,} entities, {stats.edge_count:,} edges, {stats.chunk_count:,} chunks")
+            print(
+                f"  [{ns}] {stats.entity_count:,} entities, {stats.edge_count:,} edges, {stats.chunk_count:,} chunks"
+            )
     else:
         stats = result
-        print(f"  {stats.entity_count:,} entities, {stats.edge_count:,} edges, {stats.chunk_count:,} chunks")
+        print(
+            f"  {stats.entity_count:,} entities, {stats.edge_count:,} edges, {stats.chunk_count:,} chunks"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Per-run DuckDB helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _connect_with_retry(db_path, max_attempts: int = 30, delay: float = 2.0):
     """Open a DuckDB write connection, retrying on lock conflicts."""
     import time as _time
 
     import duckdb
+
     for attempt in range(max_attempts):
         try:
             return duckdb.connect(str(db_path))
         except Exception as e:
-            if ("lock" in str(e).lower() or "conflict" in str(e).lower()) and attempt < max_attempts - 1:
+            if (
+                "lock" in str(e).lower() or "conflict" in str(e).lower()
+            ) and attempt < max_attempts - 1:
                 _time.sleep(delay)
             else:
                 raise
@@ -1827,7 +1971,11 @@ def _init_run_db(db_path: Path) -> None:
             decomposed_detail TEXT
         )
     """)
-    for _col, _type in [("nan_reason", "TEXT"), ("decomposed_score", "REAL"), ("decomposed_detail", "TEXT")]:
+    for _col, _type in [
+        ("nan_reason", "TEXT"),
+        ("decomposed_score", "REAL"),
+        ("decomposed_detail", "TEXT"),
+    ]:
         try:
             con.execute(f"ALTER TABLE eval_scores ADD COLUMN {_col} {_type}")
         except Exception:
@@ -1838,18 +1986,25 @@ def _init_run_db(db_path: Path) -> None:
 def _upsert_results_to_db(db_path: Path, results: list[dict]) -> None:
     """Insert or replace a batch of results without clearing the table."""
     import json as _json
+
     con = _connect_with_retry(db_path)
     for r in results:
         con.execute(
             "INSERT OR REPLACE INTO results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
-                r.get("id"), r.get("question"), r.get("source"),
-                r.get("question_type"), r.get("context"),
+                r.get("id"),
+                r.get("question"),
+                r.get("source"),
+                r.get("question_type"),
+                r.get("context"),
                 _json.dumps(r.get("evidence")),
-                r.get("generated_answer"), r.get("gold_answer"),
+                r.get("generated_answer"),
+                r.get("gold_answer"),
                 _json.dumps(r.get("retrieved_chunks")),
                 _json.dumps(r.get("retrieved_scores")),
-                _json.dumps(r.get("entity_ref_expansion")) if r.get("entity_ref_expansion") else None,
+                _json.dumps(r.get("entity_ref_expansion"))
+                if r.get("entity_ref_expansion")
+                else None,
                 _json.dumps(r.get("entity_ref_retry")) if r.get("entity_ref_retry") else None,
                 _json.dumps(r.get("retrieval_trace")) if r.get("retrieval_trace") else None,
                 _json.dumps(r["srr"]) if r.get("srr") else None,
@@ -1860,6 +2015,7 @@ def _upsert_results_to_db(db_path: Path, results: list[dict]) -> None:
 
 def _write_results_to_db(db_path: Path, results: list[dict]) -> None:
     import json as _json
+
     # Deduplicate by id (last write wins — handles checkpoint resume duplicates)
     seen: dict[str, dict] = {}
     for r in results:
@@ -1871,13 +2027,19 @@ def _write_results_to_db(db_path: Path, results: list[dict]) -> None:
         con.execute(
             "INSERT INTO results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
-                r.get("id"), r.get("question"), r.get("source"),
-                r.get("question_type"), r.get("context"),
+                r.get("id"),
+                r.get("question"),
+                r.get("source"),
+                r.get("question_type"),
+                r.get("context"),
                 _json.dumps(r.get("evidence")),
-                r.get("generated_answer"), r.get("gold_answer"),
+                r.get("generated_answer"),
+                r.get("gold_answer"),
                 _json.dumps(r.get("retrieved_chunks")),
                 _json.dumps(r.get("retrieved_scores")),
-                _json.dumps(r.get("entity_ref_expansion")) if r.get("entity_ref_expansion") else None,
+                _json.dumps(r.get("entity_ref_expansion"))
+                if r.get("entity_ref_expansion")
+                else None,
                 _json.dumps(r.get("entity_ref_retry")) if r.get("entity_ref_retry") else None,
                 _json.dumps(r.get("retrieval_trace")) if r.get("retrieval_trace") else None,
                 _json.dumps(r["srr"]) if r.get("srr") else None,
@@ -1890,19 +2052,43 @@ def _read_results_from_db(db_path: Path) -> list[dict]:
     import json as _json
 
     import duckdb
+
     con = duckdb.connect(str(db_path), read_only=True)
     rows = con.execute("SELECT * FROM results").fetchall()
-    cols = ["id","question","source","question_type","context","evidence",
-            "generated_answer","gold_answer","retrieved_chunks","retrieved_scores",
-            "expansion_stats","entity_ref_retry","retrieval_trace","srr"]
+    cols = [
+        "id",
+        "question",
+        "source",
+        "question_type",
+        "context",
+        "evidence",
+        "generated_answer",
+        "gold_answer",
+        "retrieved_chunks",
+        "retrieved_scores",
+        "expansion_stats",
+        "entity_ref_retry",
+        "retrieval_trace",
+        "srr",
+    ]
     con.close()
     records = []
     for row in rows:
-        r = dict(zip(cols[:len(row)], row))
-        for key in ("evidence","retrieved_chunks","retrieved_scores","expansion_stats","entity_ref_retry","retrieval_trace","srr"):
+        r = dict(zip(cols[: len(row)], row))
+        for key in (
+            "evidence",
+            "retrieved_chunks",
+            "retrieved_scores",
+            "expansion_stats",
+            "entity_ref_retry",
+            "retrieval_trace",
+            "srr",
+        ):
             if r.get(key):
-                try: r[key] = _json.loads(r[key])
-                except Exception: pass
+                try:
+                    r[key] = _json.loads(r[key])
+                except Exception:
+                    pass
         records.append(r)
     return records
 
@@ -1910,8 +2096,10 @@ def _read_results_from_db(db_path: Path) -> list[dict]:
 def _load_community_index(db_path: Path):
     """Load CommunityIndex from DB, return None if not built."""
     from chonk.community import CommunityIndex
+
     try:
         import duckdb
+
         con = duckdb.connect(str(db_path), read_only=True)
         n = con.execute("SELECT COUNT(*) FROM chunk_communities").fetchone()[0]
         con.close()
@@ -1949,10 +2137,12 @@ def _load_entity_index_from_db(db_path: Path, namespaces: list[str] | None = Non
     from chonk.ner import EntityIndex
 
     con = duckdb.connect(str(db_path), read_only=True)
-    _view_exists = con.execute(
-        "SELECT COUNT(*) FROM information_schema.tables "
-        "WHERE table_name = 'all_chunk_entities'"
-    ).fetchone()[0] > 0
+    _view_exists = (
+        con.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'all_chunk_entities'"
+        ).fetchone()[0]
+        > 0
+    )
     _ce_table = "all_chunk_entities" if _view_exists else "chunk_entities"
     if namespaces is not None:
         placeholders = ", ".join(["?" for _ in namespaces])
@@ -1968,7 +2158,9 @@ def _load_entity_index_from_db(db_path: Path, namespaces: list[str] | None = Non
         rows = con.execute(
             f"SELECT chunk_id, entity_id, frequency, positions_json, score FROM {_ce_table}"
         ).fetchall()
-        total_chunks = con.execute(f"SELECT COUNT(DISTINCT chunk_id) FROM {_ce_table}").fetchone()[0]
+        total_chunks = con.execute(f"SELECT COUNT(DISTINCT chunk_id) FROM {_ce_table}").fetchone()[
+            0
+        ]
     con.close()
 
     associations = [
@@ -1982,11 +2174,13 @@ def _load_entity_index_from_db(db_path: Path, namespaces: list[str] | None = Non
         }
         for r in rows
     ]
-    return EntityIndex.from_dict({
-        "total_chunks": total_chunks,
-        "score_weights": [0.4, 0.3, 0.3],
-        "associations": associations,
-    })
+    return EntityIndex.from_dict(
+        {
+            "total_chunks": total_chunks,
+            "score_weights": [0.4, 0.3, 0.3],
+            "associations": associations,
+        }
+    )
 
 
 def _prune_redundant(hits, db_conn, threshold):
@@ -1996,6 +2190,7 @@ def _prune_redundant(hits, db_conn, threshold):
     two chunks have cosine similarity >= threshold.
     """
     import math
+
     if threshold is None or len(hits) <= 1:
         return hits
     chunk_ids = [cid for cid, _, _ in hits]
@@ -2025,14 +2220,30 @@ def _prune_redundant(hits, db_conn, threshold):
 
 
 _FANG_DOMAINS = [
-    ("sec_10k",  "global", "SEC 10-K Filings",
-     "Annual financial reports and business disclosures filed by public companies with the SEC"),
-    ("cve",      "global", "CVE Security Records",
-     "Common Vulnerabilities and Exposures records describing software security vulnerabilities"),
-    ("fed_reg",  "global", "Federal Register",
-     "US government regulatory documents, proposed rules, final rules, and agency notices"),
-    ("patents",  "global", "US Patents",
-     "United States utility and design patents describing inventions and innovations"),
+    (
+        "sec_10k",
+        "global",
+        "SEC 10-K Filings",
+        "Annual financial reports and business disclosures filed by public companies with the SEC",
+    ),
+    (
+        "cve",
+        "global",
+        "CVE Security Records",
+        "Common Vulnerabilities and Exposures records describing software security vulnerabilities",
+    ),
+    (
+        "fed_reg",
+        "global",
+        "Federal Register",
+        "US government regulatory documents, proposed rules, final rules, and agency notices",
+    ),
+    (
+        "patents",
+        "global",
+        "US Patents",
+        "United States utility and design patents describing inventions and innovations",
+    ),
 ]
 
 
@@ -2056,6 +2267,7 @@ def _register_fang_domains(store) -> None:
 
 def _build_domain_filter_fn(openai_client, model: str):
     """Return a callable suitable for EnhancedSearch.search(domain_filter_llm_fn=...)."""
+
     def _fn(prompt: str) -> str:
         resp = openai_client.chat.completions.create(
             model=model,
@@ -2063,10 +2275,28 @@ def _build_domain_filter_fn(openai_client, model: str):
             temperature=0,
         )
         return resp.choices[0].message.content or ""
+
     return _fn
 
 
-def _build_enhanced_search(store, db_path: Path | None = None, use_ner_x: bool = False, embed_model=None, entity_ref_expansion: bool = False, entity_ref_expansion_k: int = 20, entity_ref_expansion_per_k: int | None = None, entity_ref_expansion_min_sim: float | None = None, use_cluster: bool = False, lane_entity_min_sim: float | None = None, namespaces: list[str] | None = None, domain_ids: list[str] | None = None, community_index=None, context_graph_expansion: bool = False, context_graph_min_weight: float = 0.1, context_graph_top_k: int = 5):
+def _build_enhanced_search(
+    store,
+    db_path: Path | None = None,
+    use_ner_x: bool = False,
+    embed_model=None,
+    entity_ref_expansion: bool = False,
+    entity_ref_expansion_k: int = 20,
+    entity_ref_expansion_per_k: int | None = None,
+    entity_ref_expansion_min_sim: float | None = None,
+    use_cluster: bool = False,
+    lane_entity_min_sim: float | None = None,
+    namespaces: list[str] | None = None,
+    domain_ids: list[str] | None = None,
+    community_index=None,
+    context_graph_expansion: bool = False,
+    context_graph_min_weight: float = 0.1,
+    context_graph_top_k: int = 5,
+):
     """Load EnhancedSearch: from pre-built DB tables if available, else rebuild in memory."""
     import duckdb
 
@@ -2086,14 +2316,19 @@ def _build_enhanced_search(store, db_path: Path | None = None, use_ner_x: bool =
         if n > 0:
             print(f"Loading EntityIndex from DB ({n:,} associations)...")
             entity_index = _load_entity_index_from_db(db_path, namespaces=namespaces)
-            print(f"  {entity_index.total_chunks():,} chunks, {len(entity_index.entity_ids()):,} entities")
+            print(
+                f"  {entity_index.total_chunks():,} chunks, {len(entity_index.entity_ids()):,} entities"
+            )
 
             cluster_map = None
             if use_cluster:
                 from chonk.cluster import ClusterMap
+
                 print("  Building ClusterMap...")
                 cluster_map = ClusterMap.build(entity_index)
-                print(f"  {cluster_map.cluster_count():,} clusters across {cluster_map.entity_count():,} entities")
+                print(
+                    f"  {cluster_map.cluster_count():,} clusters across {cluster_map.entity_count():,} entities"
+                )
 
             matcher = SpacyMatcher(model=SPACY_MODEL, strip_numeric=True)
             query_ner_fn = lambda text: [m.display_name for m in matcher.match(text)]
@@ -2112,7 +2347,9 @@ def _build_enhanced_search(store, db_path: Path | None = None, use_ner_x: bool =
                         entity_embedding_top_k=10,
                     )
                 else:
-                    print("  entity_embeddings table empty — ner-x disabled. Run build-ner --with-embeddings first.")
+                    print(
+                        "  entity_embeddings table empty — ner-x disabled. Run build-ner --with-embeddings first."
+                    )
 
             embed_fn_kwargs: dict = {}
             if embed_model is not None:
@@ -2155,7 +2392,9 @@ def _build_enhanced_search(store, db_path: Path | None = None, use_ner_x: bool =
                 **embed_fn_kwargs,
             )
 
-    print(f"Building EntityIndex with SpacyMatcher({SPACY_MODEL}) (not pre-built, rebuild in memory)...")
+    print(
+        f"Building EntityIndex with SpacyMatcher({SPACY_MODEL}) (not pre-built, rebuild in memory)..."
+    )
     matcher = SpacyMatcher(model=SPACY_MODEL, strip_numeric=True)
     entity_index = EntityIndex()
     all_chunks = store.vector.get_all_chunks()
@@ -2171,9 +2410,12 @@ def _build_enhanced_search(store, db_path: Path | None = None, use_ner_x: bool =
     cluster_map = None
     if use_cluster:
         from chonk.cluster import ClusterMap
+
         print("  Building ClusterMap...")
         cluster_map = ClusterMap.build(entity_index)
-        print(f"  {cluster_map.cluster_count():,} clusters across {cluster_map.entity_count():,} entities")
+        print(
+            f"  {cluster_map.cluster_count():,} clusters across {cluster_map.entity_count():,} entities"
+        )
     query_ner_fn = lambda text: [m.display_name for m in matcher.match(text)]
     query_entity_id_fn = lambda text: [m.entity_id for m in matcher.match(text)]
     return EnhancedSearch(
@@ -2208,15 +2450,16 @@ def cmd_run(args: argparse.Namespace) -> None:
     _cfg = _load_config(getattr(args, "config", None))
     _apply_config(_cfg, args)
 
-    out_dir     = Path(args.out_dir)
-    data_dir    = out_dir / "data"
+    out_dir = Path(args.out_dir)
+    data_dir = out_dir / "data"
     results_dir = out_dir / "results"
     results_dir.mkdir(exist_ok=True)
-    run_name     = getattr(args, "run_name", "contextual")
+    run_name = getattr(args, "run_name", "contextual")
 
     # Kill any stale processes already running the same run-name
     import signal
     import subprocess as _sp
+
     _my_pid = os.getpid()
     try:
         _procs = _sp.check_output(
@@ -2233,44 +2476,46 @@ def cmd_run(args: argparse.Namespace) -> None:
                     pass
     except _sp.CalledProcessError:
         pass  # no matching processes
-    results_f    = results_dir / f"{run_name}.jsonl"
-    ckpt_f       = results_dir / f"{run_name}_checkpoint.jsonl"
-    use_vanilla  = getattr(args, "vanilla", False)
-    use_rerank        = getattr(args, "rerank", False)
-    rerank_provider   = getattr(args, "rerank_provider", "local")
-    use_enhanced      = getattr(args, "enhanced", False)
-    use_ner_x         = getattr(args, "ner_x", False)
+    results_f = results_dir / f"{run_name}.jsonl"
+    ckpt_f = results_dir / f"{run_name}_checkpoint.jsonl"
+    use_vanilla = getattr(args, "vanilla", False)
+    use_rerank = getattr(args, "rerank", False)
+    rerank_provider = getattr(args, "rerank_provider", "local")
+    use_enhanced = getattr(args, "enhanced", False)
+    use_ner_x = getattr(args, "ner_x", False)
     use_entity_ref_expansion = getattr(args, "entity_ref_expansion", False)
-    entity_ref_expansion_per_k  = getattr(args, "entity_ref_expansion_per_k", None)
+    entity_ref_expansion_per_k = getattr(args, "entity_ref_expansion_per_k", None)
     entity_ref_expansion_min_sim = getattr(args, "entity_ref_expansion_min_sim", None)
     use_cluster = getattr(args, "cluster", False)
     use_context_graph = getattr(args, "context_graph", False)
     context_graph_min_weight = getattr(args, "context_graph_min_weight", 0.1)
     context_graph_top_k = getattr(args, "context_graph_top_k", 5)
     search_mode = getattr(args, "search_mode", "vector_first")
-    use_entity_ref_retry     = getattr(args, "entity_ref_retry", False)
-    use_structured_gen       = getattr(args, "structured_gen", False)
+    use_entity_ref_retry = getattr(args, "entity_ref_retry", False)
+    use_structured_gen = getattr(args, "structured_gen", False)
     use_breadcrumb_context = getattr(args, "breadcrumb_context", False)
-    breadcrumb_style       = getattr(args, "breadcrumb_style", "markdown")
-    use_community_context  = getattr(args, "community_context", False)
+    breadcrumb_style = getattr(args, "breadcrumb_style", "markdown")
+    use_community_context = getattr(args, "community_context", False)
     community_min_coherence = getattr(args, "community_min_coherence", 0.0)
-    breadcrumb_embed       = getattr(args, "breadcrumb_embed", False)
-    no_breadcrumb_embed    = not breadcrumb_embed  # legacy alias for internal logic
-    redundancy_threshold   = getattr(args, "redundancy_threshold", None)
-    lane_entity_min_sim    = getattr(args, "lane_entity_min_sim", None)
+    breadcrumb_embed = getattr(args, "breadcrumb_embed", False)
+    no_breadcrumb_embed = not breadcrumb_embed  # legacy alias for internal logic
+    redundancy_threshold = getattr(args, "redundancy_threshold", None)
+    lane_entity_min_sim = getattr(args, "lane_entity_min_sim", None)
     concentration_threshold = getattr(args, "concentration_threshold", None)
     query_complexity_threshold = getattr(args, "query_complexity_threshold", 2)
     namespaces = getattr(args, "namespaces", None)
     domain_ids = getattr(args, "domain_ids", None)
     auto_domain_filter = getattr(args, "auto_domain_filter", False)
-    db_name_override = getattr(args, 'db_name', None)
-    question_ids_file = getattr(args, 'question_ids', None)
+    db_name_override = getattr(args, "db_name", None)
+    question_ids_file = getattr(args, "question_ids", None)
     if db_name_override:
         db_path = data_dir / db_name_override
     else:
-        _ctx_db = DB_FILENAME.replace(".duckdb", "_nobc.duckdb") if no_breadcrumb_embed else DB_FILENAME
+        _ctx_db = (
+            DB_FILENAME.replace(".duckdb", "_nobc.duckdb") if no_breadcrumb_embed else DB_FILENAME
+        )
         db_path = data_dir / (VANILLA_DB_FILENAME if use_vanilla else _ctx_db)
-    top_k        = VANILLA_K if use_vanilla else (getattr(args, "top_k", None) or K)
+    top_k = VANILLA_K if use_vanilla else (getattr(args, "top_k", None) or K)
     gen_temperature = VANILLA_TEMPERATURE  # paper: 0.7 for all systems
 
     _gen_model_check = getattr(args, "gen_model", GEN_MODEL)
@@ -2315,20 +2560,27 @@ def cmd_run(args: argparse.Namespace) -> None:
         "auto_domain_filter": auto_domain_filter,
         "top_k": top_k,
         "question_ids": question_ids_file,
-        "corpus": "full" if (question_ids_file and "full_corpus" in str(question_ids_file)) else "grid" if question_ids_file else "all",
+        "corpus": "full"
+        if (question_ids_file and "full_corpus" in str(question_ids_file))
+        else "grid"
+        if question_ids_file
+        else "all",
     }
     _flags_path = results_dir / f"{run_name}_flags.json"
     _flags_path.write_text(json.dumps(_flags, indent=2), encoding="utf-8")
     # Append to consolidated manifest
     _manifest_path = out_dir / "run_manifest.jsonl"
     import datetime as _dt
+
     _manifest_entry = {"timestamp": _dt.datetime.utcnow().isoformat() + "Z", **_flags}
     with open(_manifest_path, "a", encoding="utf-8") as _mf:
         _mf.write(json.dumps(_manifest_entry) + "\n")
 
     import atexit as _atexit
     import signal as _signal
+
     _run_completed = [False]
+
     def _cleanup_flags():
         if not _run_completed[0] and _flags_path.exists():
             _flags_path.unlink(missing_ok=True)
@@ -2336,15 +2588,19 @@ def cmd_run(args: argparse.Namespace) -> None:
             import gc
 
             import torch
+
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
         except Exception:
             pass
+
     _atexit.register(_cleanup_flags)
+
     def _sigterm_handler(signum, frame):
         raise SystemExit(0)
+
     _signal.signal(_signal.SIGTERM, _sigterm_handler)
 
     questions = _load_questions(data_dir)
@@ -2354,7 +2610,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         _id_to_q = {q.get("id"): q for q in questions}
         questions = [_id_to_q[qid] for qid in _order if qid in _id_to_q]
     if args.limit:
-        questions = questions[:args.limit]
+        questions = questions[: args.limit]
     print(f"Questions: {len(questions)}")
 
     done_ids: set[str] = set()
@@ -2372,10 +2628,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     _db_pending_items: list[dict] = []
     if run_db.exists():
         import duckdb as _duckdb
+
         try:
             _con = _duckdb.connect(str(run_db))
             _db_done = set(
-                row[0] for row in _con.execute(
+                row[0]
+                for row in _con.execute(
                     "SELECT id FROM results WHERE generated_answer IS NOT NULL"
                 ).fetchall()
             )
@@ -2392,32 +2650,41 @@ def cmd_run(args: argparse.Namespace) -> None:
             for _row in _db_rows:
                 _qid, _q, _src, _qtype, _ctx, _ev, _gold, _cids, _scores, _exp = _row
                 if _qid not in done_ids:
-                    _db_pending_items.append({
-                        "qid": _qid, "question": _q, "source": _src or "?",
-                        "qtype": _qtype or "?", "context": _ctx or "",
-                        "chunk_ids": _cids or [], "scores": _scores or [],
-                        "chunk_texts": [], "expansion_stats": _exp,
-                        "evidence": _ev or [], "gold": _gold or "",
-                        "sub_queries": None,
-                    })
+                    _db_pending_items.append(
+                        {
+                            "qid": _qid,
+                            "question": _q,
+                            "source": _src or "?",
+                            "qtype": _qtype or "?",
+                            "context": _ctx or "",
+                            "chunk_ids": _cids or [],
+                            "scores": _scores or [],
+                            "chunk_texts": [],
+                            "expansion_stats": _exp,
+                            "evidence": _ev or [],
+                            "gold": _gold or "",
+                            "sub_queries": None,
+                        }
+                    )
             if _db_pending_items:
                 _db_pending_ids = {it["qid"] for it in _db_pending_items}
                 done_ids.update(_db_pending_ids)
-                print(f"Resuming {len(_db_pending_items)} pre-built work_items from DB (skipping retrieval)")
+                print(
+                    f"Resuming {len(_db_pending_items)} pre-built work_items from DB (skipping retrieval)"
+                )
         except Exception:
             pass
 
-    pending = [(i, q) for i, q in enumerate(questions)
-               if q.get("id", f"q{i}") not in done_ids]
+    pending = [(i, q) for i, q in enumerate(questions) if q.get("id", f"q{i}") not in done_ids]
     print(f"Pending: {len(pending)}")
 
     # ── 1. Embed all questions (full-corpus cache — order-independent across runs)
     # Cache key is the full unfiltered corpus so any --question-ids subset or
     # reordering reuses the same cache file via ID lookup.
     q_vecs_cache = data_dir / "question_embeddings.npy"
-    q_ids_cache  = data_dir / "question_ids.json"
+    q_ids_cache = data_dir / "question_ids.json"
 
-    _corpus_qs  = _load_questions(data_dir)
+    _corpus_qs = _load_questions(data_dir)
     _corpus_ids = [q.get("id", f"q{i}") for i, q in enumerate(_corpus_qs)]
 
     _corpus_vecs = None
@@ -2429,14 +2696,17 @@ def cmd_run(args: argparse.Namespace) -> None:
             q_vecs_cache.unlink()  # stale — corpus changed
 
     import hashlib as _hl_pre
+
     _ent_cache_key_pre = _hl_pre.md5(
         (EMBED_MODEL + SPACY_MODEL + json.dumps(_corpus_ids)).encode()
     ).hexdigest()[:16]
     _ent_vecs_cache_path = data_dir / f"entity_vecs_{_ent_cache_key_pre}.npz"
     _ent_ents_cache_path = data_dir / f"entity_ents_{_ent_cache_key_pre}.json"
-    _ent_cache_exists    = _ent_vecs_cache_path.exists() and _ent_ents_cache_path.exists()
+    _ent_cache_exists = _ent_vecs_cache_path.exists() and _ent_ents_cache_path.exists()
 
-    _needs_entity_embed_at_run = use_ner_x or use_entity_ref_expansion or concentration_threshold is not None
+    _needs_entity_embed_at_run = (
+        use_ner_x or use_entity_ref_expansion or concentration_threshold is not None
+    )
     if _needs_entity_embed_at_run and not _ent_cache_exists:
         raise RuntimeError(
             f"Entity embedding cache missing for model '{EMBED_MODEL}' / spaCy '{SPACY_MODEL}'.\n"
@@ -2448,7 +2718,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             f"Run: python demo/graphrag_bench.py prime-cache --out-dir {args.out_dir}"
         )
 
-    use_sr  = getattr(args, "sr", False)
+    use_sr = getattr(args, "sr", False)
     use_srr = getattr(args, "srr", False)
     use_multi_step = getattr(args, "multi_step", False)
     embed_model = None
@@ -2457,11 +2727,20 @@ def cmd_run(args: argparse.Namespace) -> None:
         if not _embed_device:
             try:
                 import torch
-                if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and not torch.cuda.is_available():
+
+                if (
+                    hasattr(torch.backends, "mps")
+                    and torch.backends.mps.is_available()
+                    and not torch.cuda.is_available()
+                ):
                     _embed_device = "cpu"
             except ImportError:
                 pass
-        embed_model = SentenceTransformer(EMBED_MODEL, device=_embed_device) if _embed_device else SentenceTransformer(EMBED_MODEL)
+        embed_model = (
+            SentenceTransformer(EMBED_MODEL, device=_embed_device)
+            if _embed_device
+            else SentenceTransformer(EMBED_MODEL)
+        )
 
     # Build lookup and align to the (possibly filtered/reordered) questions list
     _id_to_vec = {qid: _corpus_vecs[i] for i, qid in enumerate(_corpus_ids)}
@@ -2473,7 +2752,9 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     # ── 2. Retrieve context for each question (sequential; DuckDB conn is serialized)
     fetch_k = max(K_FETCH, top_k) if use_rerank else top_k
-    print(f"Retrieving context from index (fetch_k={fetch_k}, k={top_k}, rerank={use_rerank}, enhanced={use_enhanced}, vanilla={use_vanilla})...")
+    print(
+        f"Retrieving context from index (fetch_k={fetch_k}, k={top_k}, rerank={use_rerank}, enhanced={use_enhanced}, vanilla={use_vanilla})..."
+    )
 
     reranker = None
     together_rerank_client = None
@@ -2481,46 +2762,67 @@ def cmd_run(args: argparse.Namespace) -> None:
     if use_rerank:
         if rerank_provider == "together":
             from together import Together
+
             together_rerank_client = Together(api_key=os.environ["TOGETHER_API_KEY"])
             print(f"Using Together reranker: {RERANK_MODEL_TOGETHER}")
         elif rerank_provider == "cohere":
             import cohere
+
             cohere_rerank_client = cohere.ClientV2(api_key=os.environ["COHERE_API_KEY"])
             print(f"Using Cohere reranker: {RERANK_MODEL_COHERE}")
         else:
             import os as _os
 
             from sentence_transformers import CrossEncoder
-            _rerank_device = getattr(args, "rerank_device", None) or _os.environ.get("RERANKER_DEVICE") or None
+
+            _rerank_device = (
+                getattr(args, "rerank_device", None) or _os.environ.get("RERANKER_DEVICE") or None
+            )
             if not _rerank_device:
                 try:
                     import torch
-                    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and not torch.cuda.is_available():
+
+                    if (
+                        hasattr(torch.backends, "mps")
+                        and torch.backends.mps.is_available()
+                        and not torch.cuda.is_available()
+                    ):
                         _rerank_device = "cpu"
                 except ImportError:
                     pass
-            print(f"Loading reranker: {RERANK_MODEL}{'  [device='+_rerank_device+']' if _rerank_device else ''}...")
-            reranker = CrossEncoder(RERANK_MODEL, max_length=512, device=_rerank_device) if _rerank_device else CrossEncoder(RERANK_MODEL, max_length=512)
+            print(
+                f"Loading reranker: {RERANK_MODEL}{'  [device=' + _rerank_device + ']' if _rerank_device else ''}..."
+            )
+            reranker = (
+                CrossEncoder(RERANK_MODEL, max_length=512, device=_rerank_device)
+                if _rerank_device
+                else CrossEncoder(RERANK_MODEL, max_length=512)
+            )
 
     _need_community = use_community_context or search_mode in ("graph_first", "map_reduce_global")
     community_index = _load_community_index(db_path) if _need_community else None
     if use_community_context and community_index is None:
-        print("WARNING: --community-context set but no community index found. Run 'build-community' first.")
+        print(
+            "WARNING: --community-context set but no community index found. Run 'build-community' first."
+        )
 
     # Build map-reduce LLM fn when needed (before entering the store block)
     _map_reduce_llm_fn = None
     if search_mode == "map_reduce_global":
         import openai as _mr_oai
+
         _mr_gen_model = getattr(args, "gen_model", GEN_MODEL)
-        _mr_provider  = getattr(args, "gen_provider", "openai")
+        _mr_provider = getattr(args, "gen_provider", "openai")
         if _mr_provider == "together":
             _mr_client = _mr_oai.OpenAI(
                 api_key=os.environ["TOGETHER_API_KEY"], base_url=TOGETHER_BASE_URL, timeout=120.0
             )
         elif _mr_provider == "anthropic":
             _mr_client = _mr_oai.OpenAI(
-                api_key=os.environ["ANTHROPIC_API_KEY"], base_url=ANTHROPIC_BASE_URL,
-                default_headers={"anthropic-version": "2023-06-01"}, timeout=120.0,
+                api_key=os.environ["ANTHROPIC_API_KEY"],
+                base_url=ANTHROPIC_BASE_URL,
+                default_headers={"anthropic-version": "2023-06-01"},
+                timeout=120.0,
             )
         else:
             _mr_client = _mr_oai.OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=60.0)
@@ -2554,6 +2856,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     needs_ner_for_concentration = concentration_threshold is not None and not use_enhanced
     if needs_ner_for_complexity or needs_ner_for_concentration:
         from chonk.ner import SpacyMatcher
+
         _complexity_matcher = SpacyMatcher(model=SPACY_MODEL, strip_numeric=True)
         print("Loaded SpacyMatcher for query complexity / concentration gating.")
 
@@ -2566,6 +2869,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     _adf_fn = None
     if auto_domain_filter:
         import openai as _adf_oai
+
         _adf_client = _adf_oai.OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=30.0)
         _adf_model = getattr(args, "gen_model", GEN_MODEL)
         _adf_fn = _build_domain_filter_fn(_adf_client, _adf_model)
@@ -2573,27 +2877,37 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     work_items: list[dict] = []
     with Store(db_path, embedding_dim=EMBED_DIM, read_only=True) as store:
-        enhanced_search = _build_enhanced_search(
-            store, db_path, use_ner_x=use_ner_x, embed_model=embed_model,
-            entity_ref_expansion=use_entity_ref_expansion,
-            entity_ref_expansion_per_k=entity_ref_expansion_per_k,
-            entity_ref_expansion_min_sim=entity_ref_expansion_min_sim,
-            use_cluster=use_cluster,
-            lane_entity_min_sim=lane_entity_min_sim,
-            namespaces=namespaces,
-            domain_ids=domain_ids,
-            community_index=community_index,
-            context_graph_expansion=use_context_graph,
-            context_graph_min_weight=context_graph_min_weight,
-            context_graph_top_k=context_graph_top_k,
-        ) if use_enhanced else None
+        enhanced_search = (
+            _build_enhanced_search(
+                store,
+                db_path,
+                use_ner_x=use_ner_x,
+                embed_model=embed_model,
+                entity_ref_expansion=use_entity_ref_expansion,
+                entity_ref_expansion_per_k=entity_ref_expansion_per_k,
+                entity_ref_expansion_min_sim=entity_ref_expansion_min_sim,
+                use_cluster=use_cluster,
+                lane_entity_min_sim=lane_entity_min_sim,
+                namespaces=namespaces,
+                domain_ids=domain_ids,
+                community_index=community_index,
+                context_graph_expansion=use_context_graph,
+                context_graph_min_weight=context_graph_min_weight,
+                context_graph_top_k=context_graph_top_k,
+            )
+            if use_enhanced
+            else None
+        )
 
         # Build concentration fallback search (entity ref expansion) if gating is enabled
         # and entity_ref_expansion is not already always-on.
         _conc_search = None
         if concentration_threshold is not None and not use_entity_ref_expansion:
             _conc_search = _build_enhanced_search(
-                store, db_path, use_ner_x=False, embed_model=embed_model,
+                store,
+                db_path,
+                use_ner_x=False,
+                embed_model=embed_model,
                 entity_ref_expansion=True,
                 entity_ref_expansion_per_k=entity_ref_expansion_per_k,
                 entity_ref_expansion_min_sim=entity_ref_expansion_min_sim,
@@ -2616,15 +2930,15 @@ def cmd_run(args: argparse.Namespace) -> None:
         _precomputed_entity_vecs: dict[str, np.ndarray] | None = None
         _precomputed_question_entities: list[list[str]] | None = None
         _needs_entity_embed = (
-            use_enhanced
-            and enhanced_search is not None
-            and (use_ner_x or use_entity_ref_expansion)
+            use_enhanced and enhanced_search is not None and (use_ner_x or use_entity_ref_expansion)
         )
         if _needs_entity_embed:
-            print(f"  Loading cached entity embeddings from {_ent_vecs_cache_path.name}", flush=True)
+            print(
+                f"  Loading cached entity embeddings from {_ent_vecs_cache_path.name}", flush=True
+            )
             _npz = np.load(str(_ent_vecs_cache_path))
             _ent_strings = list(_npz["strings"])
-            _ent_matrix  = _npz["vecs"]
+            _ent_matrix = _npz["vecs"]
             _precomputed_entity_vecs = {s: _ent_matrix[i] for i, s in enumerate(_ent_strings)}
             _q_entities_by_id: dict[str, list[str]] = json.loads(_ent_ents_cache_path.read_text())
             _precomputed_question_entities = [
@@ -2633,9 +2947,10 @@ def cmd_run(args: argparse.Namespace) -> None:
 
         # Multi-step: decompose each question into sub-queries and pre-embed them
         _sub_queries_by_idx: dict[int, list[str]] = {}  # j -> [sub_q1, sub_q2, ...]
-        _sub_vecs_by_idx:    dict[int, list] = {}        # j -> [vec1, vec2, ...]
+        _sub_vecs_by_idx: dict[int, list] = {}  # j -> [vec1, vec2, ...]
         if use_multi_step:
             import openai as _oai
+
             _decomp_model = args.gen_model
             if args.gen_provider == "together":
                 _decomp_client = _oai.OpenAI(
@@ -2644,7 +2959,10 @@ def cmd_run(args: argparse.Namespace) -> None:
             else:
                 _decomp_client = _oai.OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=60.0)
             _ms_embed = SentenceTransformer(EMBED_MODEL)
-            print(f"[multi-step] Decomposing {len(pending)} questions with {_decomp_model}...", flush=True)
+            print(
+                f"[multi-step] Decomposing {len(pending)} questions with {_decomp_model}...",
+                flush=True,
+            )
             for j, (i, q) in enumerate(pending):
                 subs = _decompose_question(
                     q["question"], q.get("question_type", ""), _decomp_client, _decomp_model
@@ -2653,7 +2971,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                 vecs = _ms_embed.encode(subs, show_progress_bar=False, normalize_embeddings=True)
                 _sub_vecs_by_idx[j] = list(vecs)
                 if (j + 1) % 50 == 0 or (j + 1) == len(pending):
-                    print(f"  Decomposed {j+1}/{len(pending)}", flush=True)
+                    print(f"  Decomposed {j + 1}/{len(pending)}", flush=True)
             del _ms_embed
 
         # Phase 1: vector search for all questions (sequential, DuckDB serialized)
@@ -2666,7 +2984,11 @@ def cmd_run(args: argparse.Namespace) -> None:
         _all_expansion_stats: list = []
         _all_traces: list = []
         for j, (i, q) in enumerate(pending):
-            _q_entities = _precomputed_question_entities[j] if _precomputed_question_entities is not None else None
+            _q_entities = (
+                _precomputed_question_entities[j]
+                if _precomputed_question_entities is not None
+                else None
+            )
             _bm25_query_text = q["question"] if getattr(args, "bm25", False) else None
             # ADF needs query_text to trigger domain routing even when BM25 is off
             _eff_query_text = q["question"] if _adf_fn else _bm25_query_text
@@ -2679,7 +3001,9 @@ def cmd_run(args: argparse.Namespace) -> None:
                 for sub_vec in _sub_vecs_by_idx[j]:
                     if use_enhanced and enhanced_search is not None:
                         _sub_scored = enhanced_search.search(
-                            sub_vec, k=fetch_k, query_text=_eff_query_text,
+                            sub_vec,
+                            k=fetch_k,
+                            query_text=_eff_query_text,
                             query_entities=_q_entities,
                             precomputed_entity_vecs=_precomputed_entity_vecs,
                             mode=_retrieval_mode,
@@ -2691,10 +3015,12 @@ def cmd_run(args: argparse.Namespace) -> None:
                     else:
                         _q_domain_ids = (
                             enhanced_search._select_domains(q["question"], _adf_fn)
-                            if _adf_fn and enhanced_search else _static_domain_ids
+                            if _adf_fn and enhanced_search
+                            else _static_domain_ids
                         )
                         _sub_hits = store.vector.search(
-                            sub_vec, limit=fetch_k,
+                            sub_vec,
+                            limit=fetch_k,
                             query_text=_bm25_query_text,
                             include_breadcrumbs=False,
                             namespaces=namespaces,
@@ -2704,11 +3030,17 @@ def cmd_run(args: argparse.Namespace) -> None:
                         if cid not in _merged or sc > _merged[cid][1]:
                             _merged[cid] = (cid, sc, chunk)
                 hits = sorted(_merged.values(), key=lambda x: -x[1])[:fetch_k]
-                expansion_stats = enhanced_search.last_expansion_stats if use_enhanced and enhanced_search else None
+                expansion_stats = (
+                    enhanced_search.last_expansion_stats
+                    if use_enhanced and enhanced_search
+                    else None
+                )
             elif use_enhanced and enhanced_search is not None:
                 if _capture_trace:
                     scored, _trace = enhanced_search.search(
-                        q_vecs[j], k=fetch_k, query_text=_eff_query_text,
+                        q_vecs[j],
+                        k=fetch_k,
+                        query_text=_eff_query_text,
                         query_entities=_q_entities,
                         precomputed_entity_vecs=_precomputed_entity_vecs,
                         mode=_retrieval_mode,
@@ -2719,7 +3051,9 @@ def cmd_run(args: argparse.Namespace) -> None:
                     )
                 else:
                     scored = enhanced_search.search(
-                        q_vecs[j], k=fetch_k, query_text=_eff_query_text,
+                        q_vecs[j],
+                        k=fetch_k,
+                        query_text=_eff_query_text,
                         query_entities=_q_entities,
                         precomputed_entity_vecs=_precomputed_entity_vecs,
                         mode=_retrieval_mode,
@@ -2728,15 +3062,17 @@ def cmd_run(args: argparse.Namespace) -> None:
                         domain_filter_llm_fn=_adf_fn,
                     )
                     _trace = None
-                hits   = [(sc.chunk_id, sc.score, sc.chunk) for sc in scored]
+                hits = [(sc.chunk_id, sc.score, sc.chunk) for sc in scored]
                 expansion_stats = enhanced_search.last_expansion_stats
             else:
                 _q_domain_ids = (
                     enhanced_search._select_domains(q["question"], _adf_fn)
-                    if _adf_fn and enhanced_search else _static_domain_ids
+                    if _adf_fn and enhanced_search
+                    else _static_domain_ids
                 )
                 hits = store.vector.search(
-                    q_vecs[j], limit=fetch_k,
+                    q_vecs[j],
+                    limit=fetch_k,
                     query_text=_bm25_query_text,
                     include_breadcrumbs=False,
                     namespaces=namespaces,
@@ -2753,7 +3089,9 @@ def cmd_run(args: argparse.Namespace) -> None:
                     _max_frac = max(src_counts.values()) / _k_hits
                     if _max_frac >= concentration_threshold:
                         scored_conc = _conc_search.search(
-                            q_vecs[j], k=fetch_k, query_text=_eff_query_text,
+                            q_vecs[j],
+                            k=fetch_k,
+                            query_text=_eff_query_text,
                             query_entities=_q_entities,
                             precomputed_entity_vecs=_precomputed_entity_vecs,
                             namespaces=namespaces,
@@ -2767,7 +3105,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             _all_expansion_stats.append(expansion_stats)
             _all_traces.append(_trace)
             if (j + 1) % 100 == 0 or (j + 1) == len(pending):
-                print(f"  Vector search {j+1}/{len(pending)}", flush=True)
+                print(f"  Vector search {j + 1}/{len(pending)}", flush=True)
 
         # Phase 2: batch reranking across all questions (GPU fully utilized)
         _rerank_ckpt_path = None
@@ -2778,6 +3116,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                 import gc
 
                 import torch
+
                 if embed_model is not None:
                     del embed_model
                     embed_model = None
@@ -2791,8 +3130,13 @@ def cmd_run(args: argparse.Namespace) -> None:
                     # at seq_len=512 on XLM-RoBERTa-large. Scale by actual seq_len.
                     _seq_len = getattr(reranker, "max_length", 512)
                     _mib_per_sample = 20.0 * _seq_len / 512
-                    _rerank_batch_size = max(16, min(512, int(_free_mib * 0.55 / _mib_per_sample) // 16 * 16))
-                    print(f"  CUDA: {_free_mib} MiB free, computed batch_size={_rerank_batch_size}.", flush=True)
+                    _rerank_batch_size = max(
+                        16, min(512, int(_free_mib * 0.55 / _mib_per_sample) // 16 * 16)
+                    )
+                    print(
+                        f"  CUDA: {_free_mib} MiB free, computed batch_size={_rerank_batch_size}.",
+                        flush=True,
+                    )
                 else:
                     _rerank_batch_size = 64
                     print("  CPU reranking, batch_size=64.", flush=True)
@@ -2800,22 +3144,30 @@ def cmd_run(args: argparse.Namespace) -> None:
                 _rerank_batch_size = 64
             _RERANK_CHUNK = args.rerank_chunk
             import hashlib as _hl_rr
-            _rerank_key_str = json.dumps({
-                "db": str(db_path),
-                "fetch_k": fetch_k,
-                "top_k": top_k,
-                "enhanced": use_enhanced,
-                "vanilla": use_vanilla,
-                "lane_sim": lane_entity_min_sim,
-                "cluster": use_cluster,
-                "entity_ref": use_entity_ref_expansion,
-                "search_mode": search_mode,
-                "ner_x": use_ner_x,
-                "rerank_provider": rerank_provider,
-                "reranker": (RERANK_MODEL_TOGETHER if rerank_provider == "together"
-                             else RERANK_MODEL_COHERE if rerank_provider == "cohere"
-                             else RERANK_MODEL),
-            }, sort_keys=True)
+
+            _rerank_key_str = json.dumps(
+                {
+                    "db": str(db_path),
+                    "fetch_k": fetch_k,
+                    "top_k": top_k,
+                    "enhanced": use_enhanced,
+                    "vanilla": use_vanilla,
+                    "lane_sim": lane_entity_min_sim,
+                    "cluster": use_cluster,
+                    "entity_ref": use_entity_ref_expansion,
+                    "search_mode": search_mode,
+                    "ner_x": use_ner_x,
+                    "rerank_provider": rerank_provider,
+                    "reranker": (
+                        RERANK_MODEL_TOGETHER
+                        if rerank_provider == "together"
+                        else RERANK_MODEL_COHERE
+                        if rerank_provider == "cohere"
+                        else RERANK_MODEL
+                    ),
+                },
+                sort_keys=True,
+            )
             _rerank_cache_key = _hl_rr.md5(_rerank_key_str.encode()).hexdigest()[:16]
             _rerank_ckpt_path = results_dir / f"_rerank_ckpt_{_rerank_cache_key}.json"
             # Load existing checkpoint: qid -> [chunk_id, ...]
@@ -2823,7 +3175,10 @@ def cmd_run(args: argparse.Namespace) -> None:
             if _rerank_ckpt_path.exists():
                 try:
                     _rerank_ckpt = json.loads(_rerank_ckpt_path.read_text())
-                    print(f"  Rerank checkpoint: {len(_rerank_ckpt)} questions already done.", flush=True)
+                    print(
+                        f"  Rerank checkpoint: {len(_rerank_ckpt)} questions already done.",
+                        flush=True,
+                    )
                 except Exception:
                     _rerank_ckpt = {}
             _reranked_hits: list = [None] * len(_all_hits)
@@ -2837,14 +3192,21 @@ def cmd_run(args: argparse.Namespace) -> None:
             for j, (i, q) in enumerate(pending):
                 qid = q.get("id", f"q{i}")
                 if qid in _rerank_ckpt:
-                    ordered = [_hit_by_cid[j][cid] for cid in _rerank_ckpt[qid] if cid in _hit_by_cid[j]]
+                    ordered = [
+                        _hit_by_cid[j][cid] for cid in _rerank_ckpt[qid] if cid in _hit_by_cid[j]
+                    ]
                     _reranked_hits[j] = ordered
                 else:
                     _pending_rerank_indices.append(j)
             if len(_pending_rerank_indices) < len(_all_hits):
-                print(f"  Restored {len(_all_hits) - len(_pending_rerank_indices)} from rerank checkpoint.", flush=True)
-            for _ci, _chunk_start in enumerate(range(0, len(_pending_rerank_indices), _RERANK_CHUNK)):
-                _chunk_idx = _pending_rerank_indices[_chunk_start:_chunk_start + _RERANK_CHUNK]
+                print(
+                    f"  Restored {len(_all_hits) - len(_pending_rerank_indices)} from rerank checkpoint.",
+                    flush=True,
+                )
+            for _ci, _chunk_start in enumerate(
+                range(0, len(_pending_rerank_indices), _RERANK_CHUNK)
+            ):
+                _chunk_idx = _pending_rerank_indices[_chunk_start : _chunk_start + _RERANK_CHUNK]
                 _chunk_end_display = _chunk_start + len(_chunk_idx)
                 _pair_offsets = [0]
                 _chunk_pairs = []
@@ -2853,44 +3215,52 @@ def cmd_run(args: argparse.Namespace) -> None:
                     pairs = [(q["question"], chunk.content) for _, _, chunk in _all_hits[j]]
                     _chunk_pairs.extend(pairs)
                     _pair_offsets.append(len(_chunk_pairs))
-                _chunk_scores = reranker.predict(_chunk_pairs, batch_size=_rerank_batch_size, show_progress_bar=False)
+                _chunk_scores = reranker.predict(
+                    _chunk_pairs, batch_size=_rerank_batch_size, show_progress_bar=False
+                )
                 for _ji, j in enumerate(_chunk_idx):
-                    scores = _chunk_scores[_pair_offsets[_ji]:_pair_offsets[_ji + 1]]
-                    ranked = sorted(zip(scores, _all_hits[j]), key=lambda x: x[0], reverse=True)[:top_k]
+                    scores = _chunk_scores[_pair_offsets[_ji] : _pair_offsets[_ji + 1]]
+                    ranked = sorted(zip(scores, _all_hits[j]), key=lambda x: x[0], reverse=True)[
+                        :top_k
+                    ]
                     _reranked_hits[j] = [h for _, h in ranked]
                     qid = pending[j][1].get("id", f"q{pending[j][0]}")
                     _rerank_ckpt[qid] = [h[0] for h in _reranked_hits[j]]
                 _rerank_ckpt_path.write_text(json.dumps(_rerank_ckpt))
-                print(f"  Reranked {_chunk_end_display}/{len(_pending_rerank_indices)} pending", flush=True)
+                print(
+                    f"  Reranked {_chunk_end_display}/{len(_pending_rerank_indices)} pending",
+                    flush=True,
+                )
             _all_hits = _reranked_hits
             print("  Reranking complete.", flush=True)
 
         for j, (i, q) in enumerate(pending):
             import dataclasses as _dc
-            qid  = q.get("id", f"q{i}")
+
+            qid = q.get("id", f"q{i}")
             hits = _all_hits[j]
             expansion_stats = _all_expansion_stats[j]
             _trace_obj = _all_traces[j] if j < len(_all_traces) else None
             _trace_dict = _dc.asdict(_trace_obj) if _trace_obj is not None else None
 
             if use_rerank and together_rerank_client is not None:
-                docs   = [chunk.content for _, _, chunk in hits]
-                resp   = together_rerank_client.rerank.create(
+                docs = [chunk.content for _, _, chunk in hits]
+                resp = together_rerank_client.rerank.create(
                     model=RERANK_MODEL_TOGETHER,
                     query=q["question"],
                     documents=docs,
                     top_n=top_k,
                 )
-                hits   = [hits[r.index] for r in resp.results]
+                hits = [hits[r.index] for r in resp.results]
             elif use_rerank and cohere_rerank_client is not None:
-                docs   = [chunk.content for _, _, chunk in hits]
-                resp   = cohere_rerank_client.rerank(
+                docs = [chunk.content for _, _, chunk in hits]
+                resp = cohere_rerank_client.rerank(
                     model=RERANK_MODEL_COHERE,
                     query=q["question"],
                     documents=docs,
                     top_n=top_k,
                 )
-                hits   = [hits[r.index] for r in resp.results]
+                hits = [hits[r.index] for r in resp.results]
             elif not use_rerank:
                 hits = hits[:top_k]
             if redundancy_threshold is not None:
@@ -2913,7 +3283,9 @@ def cmd_run(args: argparse.Namespace) -> None:
                     comm_id = community_index.community_id(cid)
                     if comm_id is not None and comm_id not in seen_cids:
                         seen_cids.add(comm_id)
-                        lbl = community_index.topic_label(cid, min_coherence=community_min_coherence)
+                        lbl = community_index.topic_label(
+                            cid, min_coherence=community_min_coherence
+                        )
                         if lbl:
                             labels.append(lbl)
                 if labels:
@@ -2922,16 +3294,22 @@ def cmd_run(args: argparse.Namespace) -> None:
             def _fmt_chunk(cid, chunk):
                 text = chunk.content or ""
                 if use_breadcrumb_context and chunk.breadcrumb:
-                    text = f"{_format_breadcrumb(chunk.breadcrumb, style=breadcrumb_style)}\n\n{text}"
+                    text = (
+                        f"{_format_breadcrumb(chunk.breadcrumb, style=breadcrumb_style)}\n\n{text}"
+                    )
                 return text
 
             if search_mode == "graph_first" and enhanced_search is not None:
-                _ctx = enhanced_search.assemble_graph_context(
-                    hits, query_text=_bm25_query_text
-                )
-            elif search_mode == "map_reduce_global" and enhanced_search is not None and _map_reduce_llm_fn is not None:
+                _ctx = enhanced_search.assemble_graph_context(hits, query_text=_bm25_query_text)
+            elif (
+                search_mode == "map_reduce_global"
+                and enhanced_search is not None
+                and _map_reduce_llm_fn is not None
+            ):
                 _ctx = enhanced_search.map_reduce_global_context(
-                    hits, q["question"], llm_fn=_map_reduce_llm_fn,
+                    hits,
+                    q["question"],
+                    llm_fn=_map_reduce_llm_fn,
                     concurrency=getattr(args, "concurrency", 4),
                 )
             else:
@@ -2940,55 +3318,74 @@ def cmd_run(args: argparse.Namespace) -> None:
                 )
 
             wi = {
-                "_slot":          len(work_items),
-                "qid":            qid,
-                "question":       q["question"],
-                "source":         q.get("source", q.get("subset", "?")),
-                "qtype":          q.get("question_type", "?"),
-                "context":        _ctx,
-                "chunk_ids":      [cid for cid, _, _ in hits],
-                "scores":         [float(sc) for _, sc, _ in hits],
-                "chunk_texts":    chunk_texts,
+                "_slot": len(work_items),
+                "qid": qid,
+                "question": q["question"],
+                "source": q.get("source", q.get("subset", "?")),
+                "qtype": q.get("question_type", "?"),
+                "context": _ctx,
+                "chunk_ids": [cid for cid, _, _ in hits],
+                "scores": [float(sc) for _, sc, _ in hits],
+                "chunk_texts": chunk_texts,
                 "expansion_stats": expansion_stats,
-                "evidence":       q.get("evidence", []),
-                "gold":           str(q.get("answer", "")),
-                "sub_queries":    _sub_queries_by_idx.get(j),
+                "evidence": q.get("evidence", []),
+                "gold": str(q.get("answer", "")),
+                "sub_queries": _sub_queries_by_idx.get(j),
                 "retrieval_trace": _trace_dict,
             }
             work_items.append(wi)
 
-            _upsert_results_to_db(run_db, [{
-                "id": wi["qid"], "question": wi["question"], "source": wi["source"],
-                "question_type": wi["qtype"], "context": wi["context"],
-                "evidence": wi["evidence"], "generated_answer": None,
-                "gold_answer": wi["gold"], "retrieved_chunks": wi["chunk_ids"],
-                "retrieved_scores": wi["scores"],
-                "entity_ref_expansion": wi.get("expansion_stats"),
-                "entity_ref_retry": None,
-                "retrieval_trace": _trace_dict,
-            }])
+            _upsert_results_to_db(
+                run_db,
+                [
+                    {
+                        "id": wi["qid"],
+                        "question": wi["question"],
+                        "source": wi["source"],
+                        "question_type": wi["qtype"],
+                        "context": wi["context"],
+                        "evidence": wi["evidence"],
+                        "generated_answer": None,
+                        "gold_answer": wi["gold"],
+                        "retrieved_chunks": wi["chunk_ids"],
+                        "retrieved_scores": wi["scores"],
+                        "entity_ref_expansion": wi.get("expansion_stats"),
+                        "entity_ref_retry": None,
+                        "retrieval_trace": _trace_dict,
+                    }
+                ],
+            )
             if (j + 1) % 100 == 0 or (j + 1) == len(pending):
                 pct = 100 * (j + 1) // len(pending)
-                print(f"  Generated {j+1}/{len(pending)} ({pct}%)", flush=True)
+                print(f"  Generated {j + 1}/{len(pending)} ({pct}%)", flush=True)
 
     # Prepend pre-built work_items recovered from DB (retrieval already done on prior run)
     if _db_pending_items:
         for _it in _db_pending_items:
             _it["_slot"] = len(work_items)
             work_items.append(_it)
-        print(f"  Added {len(_db_pending_items)} DB-recovered items; total work_items={len(work_items)}", flush=True)
+        print(
+            f"  Added {len(_db_pending_items)} DB-recovered items; total work_items={len(work_items)}",
+            flush=True,
+        )
 
     # Build one client per endpoint (round-robin for parallelism across multiple dedicated endpoints)
     endpoint_ids: list[str] = getattr(args, "endpoint_ids", None) or [args.gen_model]
     if args.gen_provider == "together":
         clients = [
-            openai.OpenAI(api_key=os.environ["TOGETHER_API_KEY"], base_url=TOGETHER_BASE_URL, timeout=120.0)
+            openai.OpenAI(
+                api_key=os.environ["TOGETHER_API_KEY"], base_url=TOGETHER_BASE_URL, timeout=120.0
+            )
             for _ in endpoint_ids
         ]
     elif args.gen_provider == "anthropic":
         clients = [
-            openai.OpenAI(api_key=os.environ["ANTHROPIC_API_KEY"], base_url=ANTHROPIC_BASE_URL,
-                          default_headers={"anthropic-version": "2023-06-01"}, timeout=120.0)
+            openai.OpenAI(
+                api_key=os.environ["ANTHROPIC_API_KEY"],
+                base_url=ANTHROPIC_BASE_URL,
+                default_headers={"anthropic-version": "2023-06-01"},
+                timeout=120.0,
+            )
             for _ in endpoint_ids
         ]
     else:
@@ -2996,17 +3393,25 @@ def cmd_run(args: argparse.Namespace) -> None:
         endpoint_ids = [args.gen_model]
 
     n_endpoints = len(clients)
-    print(f"Generating answers with {args.concurrency} parallel workers across {n_endpoints} endpoint(s)...")
+    print(
+        f"Generating answers with {args.concurrency} parallel workers across {n_endpoints} endpoint(s)..."
+    )
 
     # Build dedicated SRR client (may differ from gen client)
     _srr_provider = getattr(args, "srr_provider", None) or args.gen_provider
-    _srr_model    = getattr(args, "srr_model", None) or args.gen_model
+    _srr_model = getattr(args, "srr_model", None) or args.gen_model
     if (use_srr or use_sr) and (_srr_provider != args.gen_provider or _srr_model != args.gen_model):
         if _srr_provider == "together":
-            srr_client = openai.OpenAI(api_key=os.environ["TOGETHER_API_KEY"], base_url=TOGETHER_BASE_URL, timeout=120.0)
+            srr_client = openai.OpenAI(
+                api_key=os.environ["TOGETHER_API_KEY"], base_url=TOGETHER_BASE_URL, timeout=120.0
+            )
         elif _srr_provider == "anthropic":
-            srr_client = openai.OpenAI(api_key=os.environ["ANTHROPIC_API_KEY"], base_url=ANTHROPIC_BASE_URL,
-                                       default_headers={"anthropic-version": "2023-06-01"}, timeout=120.0)
+            srr_client = openai.OpenAI(
+                api_key=os.environ["ANTHROPIC_API_KEY"],
+                base_url=ANTHROPIC_BASE_URL,
+                default_headers={"anthropic-version": "2023-06-01"},
+                timeout=120.0,
+            )
         else:
             srr_client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=60.0)
         print(f"SRR client: {_srr_provider}/{_srr_model}")
@@ -3016,18 +3421,19 @@ def cmd_run(args: argparse.Namespace) -> None:
     retry_ner_fn = None
     if use_entity_ref_retry:
         from chonk.ner import SpacyMatcher
+
         _retry_matcher = SpacyMatcher(model=SPACY_MODEL, strip_numeric=True)
         retry_ner_fn = lambda text: [m.display_name for m in _retry_matcher.match(text)]
 
     new_results: list[dict] = []
-    ckpt_lock   = threading.Lock()
-    done_count  = [len(done_ids)]
+    ckpt_lock = threading.Lock()
+    done_count = [len(done_ids)]
     ckpt_counter = [0]
 
     def _process(item: dict) -> dict:
-        slot   = item["_slot"] % n_endpoints
+        slot = item["_slot"] % n_endpoints
         client = clients[slot]
-        model  = endpoint_ids[slot]
+        model = endpoint_ids[slot]
 
         answer: str = ""
         srr_stats: dict | None = None
@@ -3038,21 +3444,27 @@ def cmd_run(args: argparse.Namespace) -> None:
             srr_out = {"answer": "", "key_claims": [], "evidence_used": []}
             for attempt in range(3):
                 try:
-                    srr_out = _generate_srr(item["question"], context, _sc, _sm,
-                                            temperature=gen_temperature)
+                    srr_out = _generate_srr(
+                        item["question"], context, _sc, _sm, temperature=gen_temperature
+                    )
                     break
                 except Exception as exc:
                     if "insufficient_quota" in str(exc):
                         raise
                     if "429" in str(exc) or "rate_limit" in str(exc).lower():
                         import re as _re
+
                         _m = _re.search(r"try again in (\d+(?:\.\d+)?)s", str(exc), _re.IGNORECASE)
                         time.sleep(float(_m.group(1)) + 1 if _m else 60)
                         continue
                     if attempt == 2:
-                        srr_out = {"answer": f"[ERROR: {exc}]", "key_claims": [], "evidence_used": []}
+                        srr_out = {
+                            "answer": f"[ERROR: {exc}]",
+                            "key_claims": [],
+                            "evidence_used": [],
+                        }
                     else:
-                        time.sleep(2 ** attempt)
+                        time.sleep(2**attempt)
 
             # Evidence-compliance check (skipped for --sr): if no evidence cited, reprompt once
             _evidence_reprompt_done = False
@@ -3061,14 +3473,21 @@ def cmd_run(args: argparse.Namespace) -> None:
                     f"{i + 1}. {c}" for i, c in enumerate(srr_out["key_claims"])
                 )
                 hint = _SRR_EVIDENCE_HINT.format(claims=claims_text)
-                user_content = f"Context:\n{item['context']}\n\nQuestion: {item['question']}\n\n{hint}"
+                user_content = (
+                    f"Context:\n{item['context']}\n\nQuestion: {item['question']}\n\n{hint}"
+                )
                 try:
                     import json as _json2
+
                     resp = _sc.chat.completions.create(
                         model=_sm,
                         messages=[
-                            {"role": "system", "content": _SRR_GEN_SYSTEM + (_SRR_CLAUDE_SUFFIX if "claude" in _sm.lower() else "")},
-                            {"role": "user",   "content": user_content},
+                            {
+                                "role": "system",
+                                "content": _SRR_GEN_SYSTEM
+                                + (_SRR_CLAUDE_SUFFIX if "claude" in _sm.lower() else ""),
+                            },
+                            {"role": "user", "content": user_content},
                         ],
                         temperature=gen_temperature,
                         max_tokens=700,
@@ -3081,9 +3500,13 @@ def cmd_run(args: argparse.Namespace) -> None:
                     obj = _json2.loads(raw)
                     if isinstance(obj.get("answer"), str):
                         srr_out = {
-                            "answer":       obj["answer"],
-                            "key_claims":   [x for x in obj.get("key_claims", []) if isinstance(x, str)],
-                            "evidence_used": [x for x in obj.get("evidence_used", []) if isinstance(x, str)],
+                            "answer": obj["answer"],
+                            "key_claims": [
+                                x for x in obj.get("key_claims", []) if isinstance(x, str)
+                            ],
+                            "evidence_used": [
+                                x for x in obj.get("evidence_used", []) if isinstance(x, str)
+                            ],
                         }
                         _evidence_reprompt_done = True
                 except Exception:
@@ -3091,38 +3514,49 @@ def cmd_run(args: argparse.Namespace) -> None:
 
             answer = srr_out["answer"]
             srr_stats = {
-                "key_claims":        srr_out["key_claims"],
-                "evidence_used":     srr_out["evidence_used"],
+                "key_claims": srr_out["key_claims"],
+                "evidence_used": srr_out["evidence_used"],
                 "evidence_reprompt": _evidence_reprompt_done,
             }
         else:
             for attempt in range(3):
                 try:
-                    answer = _generate(item["question"], item["context"], client, model,
-                                       temperature=gen_temperature, structured=use_structured_gen,
-                                       vanilla=use_vanilla)
+                    answer = _generate(
+                        item["question"],
+                        item["context"],
+                        client,
+                        model,
+                        temperature=gen_temperature,
+                        structured=use_structured_gen,
+                        vanilla=use_vanilla,
+                    )
                     break
                 except Exception as exc:
                     if "insufficient_quota" in str(exc):
                         raise
                     if "429" in str(exc) or "rate_limit" in str(exc).lower():
                         import re as _re
+
                         _m = _re.search(r"try again in (\d+(?:\.\d+)?)s", str(exc), _re.IGNORECASE)
                         time.sleep(float(_m.group(1)) + 1 if _m else 60)
                         continue
                     if attempt == 2:
                         answer = f"[ERROR: {exc}]"
                     else:
-                        time.sleep(2 ** attempt)
+                        time.sleep(2**attempt)
 
         retry_stats: dict | None = None
         if use_entity_ref_retry and retry_ner_fn is not None:
             q_entities = retry_ner_fn(item["question"])
             uncovered: list[str] = []
             if q_entities:
-                ent_vecs = embed_model.encode(q_entities, normalize_embeddings=True, show_progress_bar=False)
-                ans_vec  = embed_model.encode([answer], normalize_embeddings=True, show_progress_bar=False)[0]
-                sims     = ent_vecs @ ans_vec  # (n_entities,)
+                ent_vecs = embed_model.encode(
+                    q_entities, normalize_embeddings=True, show_progress_bar=False
+                )
+                ans_vec = embed_model.encode(
+                    [answer], normalize_embeddings=True, show_progress_bar=False
+                )[0]
+                sims = ent_vecs @ ans_vec  # (n_entities,)
                 uncovered = [e for e, s in zip(q_entities, sims) if s < 0.3]
             if uncovered:
                 hint = (
@@ -3133,15 +3567,22 @@ def cmd_run(args: argparse.Namespace) -> None:
                 retry_answer = answer
                 for attempt in range(3):
                     try:
-                        retry_answer = _generate(item["question"], item["context"], client, model,
-                                                 temperature=gen_temperature, retry_hint=hint,
-                                                 structured=use_structured_gen, vanilla=use_vanilla)
+                        retry_answer = _generate(
+                            item["question"],
+                            item["context"],
+                            client,
+                            model,
+                            temperature=gen_temperature,
+                            retry_hint=hint,
+                            structured=use_structured_gen,
+                            vanilla=use_vanilla,
+                        )
                         break
                     except Exception:
                         if attempt == 2:
                             retry_answer = answer
                         else:
-                            time.sleep(2 ** attempt)
+                            time.sleep(2**attempt)
                 retry_stats = {
                     "invoked": True,
                     "uncovered_entities": uncovered,
@@ -3149,14 +3590,14 @@ def cmd_run(args: argparse.Namespace) -> None:
                 answer = retry_answer
 
         result = {
-            "id":               item["qid"],
-            "question":         item["question"],
-            "source":           item["source"],
-            "question_type":    item["qtype"],
-            "context":          item["context"],
-            "evidence":         item["evidence"],
+            "id": item["qid"],
+            "question": item["question"],
+            "source": item["source"],
+            "question_type": item["qtype"],
+            "context": item["context"],
+            "evidence": item["evidence"],
             "generated_answer": answer,
-            "gold_answer":      item["gold"],
+            "gold_answer": item["gold"],
             "retrieved_chunks": item["chunk_ids"],
             "retrieved_scores": item["scores"],
         }
@@ -3226,6 +3667,7 @@ def cmd_run(args: argparse.Namespace) -> None:
 # Together dedicated endpoint lifecycle
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def cmd_bench_eval(args: argparse.Namespace) -> None:
     """Run benchmark's native generation_eval.py on our output with checkpointing."""
     import asyncio
@@ -3233,14 +3675,14 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
 
     import numpy as np
 
-    out_dir     = Path(args.out_dir)
-    data_dir    = out_dir / "data"
+    out_dir = Path(args.out_dir)
+    data_dir = out_dir / "data"
     results_dir = out_dir / "results"
-    repo_dir    = out_dir / "GraphRAG-Benchmark"
-    run_name    = getattr(args, "run_name", "contextual")
-    results_f   = results_dir / f"{run_name}.jsonl"
-    ckpt_f      = results_dir / f"bench_eval_ckpt_{run_name}.jsonl"
-    out_f       = results_dir / f"bench_eval_{run_name}.json"
+    repo_dir = out_dir / "GraphRAG-Benchmark"
+    run_name = getattr(args, "run_name", "contextual")
+    results_f = results_dir / f"{run_name}.jsonl"
+    ckpt_f = results_dir / f"bench_eval_ckpt_{run_name}.jsonl"
+    out_f = results_dir / f"bench_eval_{run_name}.json"
 
     run_db = _run_db_path(data_dir, run_name)
     if run_db.exists():
@@ -3256,13 +3698,13 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
     if not repo_dir.exists():
         print(f"Benchmark repo not found at {repo_dir}. Run 'download' first.")
         return
-    question_ids_file = getattr(args, 'question_ids', None)
+    question_ids_file = getattr(args, "question_ids", None)
     if question_ids_file:
         with open(question_ids_file) as _f:
             allowed_ids = set(json.load(_f))
         records = [r for r in records if r["id"] in allowed_ids]
     if args.limit:
-        records = records[:args.limit]
+        records = records[: args.limit]
 
     # Load gold schemas: authoritative ground truth + typed answer schemas
     _gold_schemas: dict[str, str] = {}
@@ -3276,17 +3718,21 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
                 _answer_schemas[_s["id"]] = _s["answer_schema"]
 
     # Convert to benchmark format
-    bench_records = [{
-        "id":            r["id"],
-        "question":      r["question"],
-        "question_type": r["question_type"],
-        "generated_answer": r["generated_answer"],
-        "ground_truth":  (r.get("gold_answer") or _gold_schemas.get(r["id"])
-                          or r.get("ground_truth", "")),
-        "context":       [r["context"]],
-        "answer_schema": _answer_schemas.get(r["id"]),
-        "srr":           r.get("srr"),
-    } for r in records]
+    bench_records = [
+        {
+            "id": r["id"],
+            "question": r["question"],
+            "question_type": r["question_type"],
+            "generated_answer": r["generated_answer"],
+            "ground_truth": (
+                r.get("gold_answer") or _gold_schemas.get(r["id"]) or r.get("ground_truth", "")
+            ),
+            "context": [r["context"]],
+            "answer_schema": _answer_schemas.get(r["id"]),
+            "srr": r.get("srr"),
+        }
+        for r in records
+    ]
 
     # Load checkpoint
     done: dict[str, dict] = {}
@@ -3302,11 +3748,17 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
                 con.execute("DELETE FROM eval_scores WHERE id = ?", [item.get("id")])
                 con.execute(
                     "INSERT INTO eval_scores VALUES (?,?,?,?,?,?,?,?,?)",
-                    [item.get("id"), item.get("question_type"),
-                     item.get("answer_correctness"), item.get("rouge_score"),
-                     item.get("coverage_score"), item.get("faithfulness"),
-                     item.get("nan_reason"), item.get("decomposed_score"),
-                     item.get("decomposed_detail")],
+                    [
+                        item.get("id"),
+                        item.get("question_type"),
+                        item.get("answer_correctness"),
+                        item.get("rouge_score"),
+                        item.get("coverage_score"),
+                        item.get("faithfulness"),
+                        item.get("nan_reason"),
+                        item.get("decomposed_score"),
+                        item.get("decomposed_detail"),
+                    ],
                 )
             con.close()
             print(f"  Flushed {len(done)} checkpoint scores to DB")
@@ -3364,7 +3816,7 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
         from sentence_transformers import SentenceTransformer
 
         gt_cache_f = out_dir / "data" / "gt_embeddings.npy"
-        gt_id_f    = out_dir / "data" / "gt_embedding_ids.json"
+        gt_id_f = out_dir / "data" / "gt_embedding_ids.json"
 
         embed_model = SentenceTransformer(EMBED_MODEL, device="cpu")
 
@@ -3381,43 +3833,56 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
                 print("Loading cached ground-truth embeddings...")
                 _all_gt_vecs = np.load(str(gt_cache_f))
                 _cached_id_idx = {qid: i for i, qid in enumerate(_cached_gt_ids)}
-                _gt_cache_vecs = np.stack([_all_gt_vecs[_cached_id_idx[qid]] for qid in _gt_ids_sorted])
+                _gt_cache_vecs = np.stack(
+                    [_all_gt_vecs[_cached_id_idx[qid]] for qid in _gt_ids_sorted]
+                )
 
         if _gt_cache_vecs is None:
             _gt_texts_sorted = [_gt_by_id[qid] or "" for qid in _gt_ids_sorted]
             print(f"Encoding {len(_gt_texts_sorted)} ground-truth texts (batched)...")
             _gt_cache_vecs = embed_model.encode(
-                _gt_texts_sorted, batch_size=32, normalize_embeddings=True,
+                _gt_texts_sorted,
+                batch_size=32,
+                normalize_embeddings=True,
                 show_progress_bar=False,
             ).astype("float32")
             # Only expand cache if this run has more questions than what's cached
-            if not gt_cache_f.exists() or len(_gt_ids_sorted) > len(json.loads(gt_id_f.read_text()) if gt_id_f.exists() else []):
+            if not gt_cache_f.exists() or len(_gt_ids_sorted) > len(
+                json.loads(gt_id_f.read_text()) if gt_id_f.exists() else []
+            ):
                 np.save(str(gt_cache_f), _gt_cache_vecs)
                 gt_id_f.write_text(json.dumps(_gt_ids_sorted), encoding="utf-8")
                 print(f"  Cached → {gt_cache_f}")
 
         # Align to bench_records order
         _gt_sorted_idx = {qid: i for i, qid in enumerate(_gt_ids_sorted)}
-        gt_ids  = [r["id"] for r in bench_records]
+        gt_ids = [r["id"] for r in bench_records]
         gt_vecs = np.stack([_gt_cache_vecs[_gt_sorted_idx[rid]] for rid in gt_ids])
 
         # Answer embeddings (per run — cached)
         ans_cache_f = out_dir / "data" / f"ans_embeddings_{run_name}.npy"
-        ans_id_f    = out_dir / "data" / f"ans_embedding_ids_{run_name}.json"
-        all_ans_ids   = [r["id"] for r in bench_records]
+        ans_id_f = out_dir / "data" / f"ans_embedding_ids_{run_name}.json"
+        all_ans_ids = [r["id"] for r in bench_records]
         all_ans_texts = [r["generated_answer"] or "" for r in bench_records]
-        if ans_cache_f.exists() and ans_id_f.exists() and json.loads(ans_id_f.read_text()) == all_ans_ids:
+        if (
+            ans_cache_f.exists()
+            and ans_id_f.exists()
+            and json.loads(ans_id_f.read_text()) == all_ans_ids
+        ):
             print("Loading cached answer embeddings...")
             all_ans_vecs = np.load(str(ans_cache_f))
         else:
             print(f"Encoding {len(all_ans_texts)} answer texts (batched)...")
             all_ans_vecs = embed_model.encode(
-                all_ans_texts, batch_size=32, normalize_embeddings=True,
+                all_ans_texts,
+                batch_size=32,
+                normalize_embeddings=True,
                 show_progress_bar=False,
             ).astype("float32")
             np.save(str(ans_cache_f), all_ans_vecs)
             ans_id_f.write_text(json.dumps(all_ans_ids), encoding="utf-8")
             print(f"  Cached → {ans_cache_f}")
+
         # Sync embedder for typed scorer text questions — capture by value before del
         def _typed_embedder(text: str, _model=embed_model):
             return _model.encode(text, normalize_embeddings=True, show_progress_bar=False)
@@ -3433,34 +3898,39 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
 
         class CachedEmbeddings(LCEmbeddings):
             """Returns pre-computed embeddings by text lookup; never calls the model."""
+
             def embed_documents(self, texts):
                 return [emb_lookup[t].tolist() for t in texts]
+
             def embed_query(self, text):
                 return emb_lookup[text].tolist()
+
             async def aembed_query(self, text):
                 return emb_lookup[text].tolist()
+
             async def aembed_documents(self, texts):
                 return [emb_lookup[t].tolist() for t in texts]
 
         embedding = CachedEmbeddings()
 
         METRIC_CONFIG = {
-            "Fact Retrieval":                   ["rouge_score", "answer_correctness"],
-            "Complex Reasoning":                ["rouge_score", "answer_correctness"],
-            "Contextual Summarize":             ["answer_correctness", "coverage_score"],
-            "Creative Generation":              ["answer_correctness", "coverage_score", "faithfulness"],
+            "Fact Retrieval": ["rouge_score", "answer_correctness"],
+            "Complex Reasoning": ["rouge_score", "answer_correctness"],
+            "Contextual Summarize": ["answer_correctness", "coverage_score"],
+            "Creative Generation": ["answer_correctness", "coverage_score", "faithfulness"],
             # FANG-2026 question types — typed scorer used when answer_schema present
-            "Multi-Document Join":              ["typed_score"],
-            "Temporal Versioning":              ["typed_score"],
-            "Cross-Domain Entity Resolution":   ["typed_score"],
-            "Targeted Attribute Lookup":        ["typed_score"],
-            "Descriptive Attribute Lookup":     ["typed_score"],
-            "Quantitative Synthesis":           ["typed_score"],
-            "Absence/Negation":                 ["typed_score"],
+            "Multi-Document Join": ["typed_score"],
+            "Temporal Versioning": ["typed_score"],
+            "Cross-Domain Entity Resolution": ["typed_score"],
+            "Targeted Attribute Lookup": ["typed_score"],
+            "Descriptive Attribute Lookup": ["typed_score"],
+            "Quantitative Synthesis": ["typed_score"],
+            "Absence/Negation": ["typed_score"],
         }
 
         # Import typed scorer
         import importlib.util as _ilu
+
         _ts_path = data_dir / "score_typed.py"
         _score_one = None
         if _ts_path.exists():
@@ -3476,14 +3946,15 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
         _nan_final = [0]  # count of items finalized as NaN (shared across coroutines)
 
         # Token-bucket throttle: at most eval_rpm tokens per 60s window.
-        _rpm_tokens   = [float(eval_rpm)]
-        _rpm_last_ts  = [time.monotonic()]
-        _rpm_lock     = asyncio.Lock()
+        _rpm_tokens = [float(eval_rpm)]
+        _rpm_last_ts = [time.monotonic()]
+        _rpm_lock = asyncio.Lock()
         print(f"[eval] RPM limit: {eval_rpm} (judge={_judge_model})", flush=True)
 
         async def _acquire_rpm_token():
             async with _rpm_lock:
                 import asyncio as _aio
+
                 now = time.monotonic()
                 elapsed = now - _rpm_last_ts[0]
                 _rpm_tokens[0] = min(float(eval_rpm), _rpm_tokens[0] + elapsed * (eval_rpm / 60.0))
@@ -3498,6 +3969,7 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
                     _rpm_tokens[0] -= 1.0
 
         import math as _math
+
         _REPROMPT_TEMPLATES = {
             "answer_correctness": (
                 "You are evaluating whether a generated answer is correct relative to the ground truth.\n"
@@ -3529,6 +4001,7 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
             """Simplified extraction prompt for metrics that returned malformed JSON."""
             import json as _json
             import re as _re
+
             recovered: dict[str, float] = {}
             ctx_snippet = (r.get("context") or "")[:1000]
             for metric in nan_metrics:
@@ -3563,9 +4036,10 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
             """Single attempt. Returns result dict, or {'_deferred': True, '_attempt': attempt} on timeout."""
             import asyncio as _aio
             import random as _random
-            qtype   = r["question_type"]
+
+            qtype = r["question_type"]
             metrics = METRIC_CONFIG.get(qtype, ["answer_correctness"])
-            result  = {"id": r["id"], "question_type": qtype}
+            result = {"id": r["id"], "question_type": qtype}
             _rate_delay = [0.0]
             _caught_rate = [False]
 
@@ -3576,15 +4050,26 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
                     if "typed_score" in metrics:
                         schema = r.get("answer_schema")
                         if schema and _score_one is not None:
-                            _ts = _score_one(r["generated_answer"] or "", schema, embedder=_typed_embedder, srr_data=r.get("srr"))
+                            _ts = _score_one(
+                                r["generated_answer"] or "",
+                                schema,
+                                embedder=_typed_embedder,
+                                srr_data=r.get("srr"),
+                            )
                             result["typed_score"] = _ts if _ts == _ts else float("nan")
                         else:
                             # no schema — fall back to LLM judge recorded as answer_correctness
                             tasks["answer_correctness"] = compute_answer_correctness(
-                                r["question"], r["generated_answer"], r["ground_truth"], llm, embedding
+                                r["question"],
+                                r["generated_answer"],
+                                r["ground_truth"],
+                                llm,
+                                embedding,
                             )
                     if "rouge_score" in metrics:
-                        tasks["rouge_score"] = compute_rouge_score(r["generated_answer"], r["ground_truth"])
+                        tasks["rouge_score"] = compute_rouge_score(
+                            r["generated_answer"], r["ground_truth"]
+                        )
                     if "answer_correctness" in metrics:
                         tasks["answer_correctness"] = compute_answer_correctness(
                             r["question"], r["generated_answer"], r["ground_truth"], llm, embedding
@@ -3604,9 +4089,14 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
                     vals = await asyncio.gather(*tasks.values(), return_exceptions=True)
                     for key, val in zip(tasks.keys(), vals):
                         if isinstance(val, BaseException):
-                            print(f"[eval] {r['id']} {key} exception: {type(val).__name__}: {val}", flush=True)
+                            print(
+                                f"[eval] {r['id']} {key} exception: {type(val).__name__}: {val}",
+                                flush=True,
+                            )
                         result[key] = float(val) if isinstance(val, (int, float)) else float("nan")
-                    nan_metrics = [k for k in tasks if k != "rouge_score" and result.get(k) != result.get(k)]
+                    nan_metrics = [
+                        k for k in tasks if k != "rouge_score" and result.get(k) != result.get(k)
+                    ]
                     if nan_metrics:
                         # Guided judge reprompt: judge already reasoned but returned malformed JSON.
                         # Recover the score with a simplified extraction prompt.
@@ -3614,28 +4104,48 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
                         for key, val in recovered.items():
                             if not _math.isnan(val):
                                 result[key] = val
-                        nan_metrics = [k for k in nan_metrics if _math.isnan(result.get(k, float("nan")))]
+                        nan_metrics = [
+                            k for k in nan_metrics if _math.isnan(result.get(k, float("nan")))
+                        ]
                         if nan_metrics:
                             result["nan_reason"] = "parse"
                             _nan_final[0] += 1
                         else:
-                            print(f"[eval] {r['id']} reprompt recovered {list(recovered.keys())}", flush=True)
-                    print(f"[eval] {r['id']} done in {time.monotonic()-_t0:.1f}s metrics={list(tasks.keys())}", flush=True)
+                            print(
+                                f"[eval] {r['id']} reprompt recovered {list(recovered.keys())}",
+                                flush=True,
+                            )
+                    print(
+                        f"[eval] {r['id']} done in {time.monotonic() - _t0:.1f}s metrics={list(tasks.keys())}",
+                        flush=True,
+                    )
                     return result
                 except Exception as e:
-                    is_rate    = "429" in str(e) or "rate_limit" in str(e).lower() or "RateLimit" in type(e).__name__
+                    is_rate = (
+                        "429" in str(e)
+                        or "rate_limit" in str(e).lower()
+                        or "RateLimit" in type(e).__name__
+                    )
                     is_timeout = "timeout" in str(e).lower() or "Timeout" in type(e).__name__
                     kind = "rate-limit" if is_rate else "timeout" if is_timeout else "error"
-                    print(f"[eval] {r['id']} attempt {attempt+1}/5 {kind}: {e}", flush=True)
+                    print(f"[eval] {r['id']} attempt {attempt + 1}/5 {kind}: {e}", flush=True)
                     if is_timeout:
                         # Defer to back of queue — do not retry inline
-                        return {"id": r["id"], "question_type": qtype, "_deferred": True, "_attempt": attempt}
+                        return {
+                            "id": r["id"],
+                            "question_type": qtype,
+                            "_deferred": True,
+                            "_attempt": attempt,
+                        }
                     if is_rate:
                         retry_after = None
                         if hasattr(e, "response") and e.response is not None:
                             retry_after = e.response.headers.get("Retry-After")
-                        _rate_delay[0] = float(retry_after) + _random.uniform(0, 1) if retry_after \
-                            else 15 * (2 ** attempt) + _random.uniform(0, 1)
+                        _rate_delay[0] = (
+                            float(retry_after) + _random.uniform(0, 1)
+                            if retry_after
+                            else 15 * (2**attempt) + _random.uniform(0, 1)
+                        )
                         print(f"[eval] rate-limit backoff {_rate_delay[0]:.1f}s", flush=True)
                         _caught_rate[0] = True
                     else:
@@ -3658,17 +4168,22 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
 
         async def _eval_one_safe(r: dict, attempt: int = 0) -> dict:
             import asyncio as _aio
+
             try:
                 return await _aio.wait_for(_eval_one(r, attempt), timeout=1800)
             except TimeoutError:
                 print(f"[eval] {r['id']} outer 1800s timeout — skipping", flush=True)
                 qtype = r.get("question_type", "?")
-                return {"id": r["id"], "question_type": qtype,
-                        "nan_reason": "outer_timeout",
-                        **{k: float("nan") for k in METRIC_CONFIG.get(qtype, ["answer_correctness"])}}
+                return {
+                    "id": r["id"],
+                    "question_type": qtype,
+                    "nan_reason": "outer_timeout",
+                    **{k: float("nan") for k in METRIC_CONFIG.get(qtype, ["answer_correctness"])},
+                }
 
         async def _run_all():
             import asyncio as _aio
+
             _run_all_start = time.monotonic()
             _completed = [0]
             _ckpt_lock = _aio.Lock()
@@ -3685,10 +4200,14 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
                         con.execute(
                             "INSERT INTO eval_scores VALUES (?,?,?,?,?,?,?,?,?)",
                             [
-                                result.get("id"), result.get("question_type"),
-                                result.get("answer_correctness"), result.get("rouge_score"),
-                                result.get("coverage_score"), result.get("faithfulness"),
-                                result.get("nan_reason"), result.get("decomposed_score"),
+                                result.get("id"),
+                                result.get("question_type"),
+                                result.get("answer_correctness"),
+                                result.get("rouge_score"),
+                                result.get("coverage_score"),
+                                result.get("faithfulness"),
+                                result.get("nan_reason"),
+                                result.get("decomposed_score"),
                                 result.get("decomposed_detail"),
                             ],
                         )
@@ -3697,7 +4216,10 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
                     _total_elapsed = time.monotonic() - _run_all_start
                     _qpm = _completed[0] / (_total_elapsed / 60.0) if _total_elapsed > 0 else 0
                     if _completed[0] % 20 == 0:
-                        print(f"  {_completed[0]}/{len(pending)} evaluated | elapsed={_total_elapsed:.0f}s | avg={_qpm:.1f}q/min", flush=True)
+                        print(
+                            f"  {_completed[0]}/{len(pending)} evaluated | elapsed={_total_elapsed:.0f}s | avg={_qpm:.1f}q/min",
+                            flush=True,
+                        )
                         await _check_early_stop()
 
             async def _eval_and_save(r: dict, attempt: int = 0):
@@ -3710,23 +4232,31 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
                         _deferred.append((r, next_attempt))
                     else:
                         qtype = r.get("question_type", "?")
-                        nan_result = {"id": r["id"], "question_type": qtype,
-                                     "nan_reason": "timeout_exhausted",
-                                     **{k: float("nan") for k in METRIC_CONFIG.get(qtype, ["answer_correctness"])}}
+                        nan_result = {
+                            "id": r["id"],
+                            "question_type": qtype,
+                            "nan_reason": "timeout_exhausted",
+                            **{
+                                k: float("nan")
+                                for k in METRIC_CONFIG.get(qtype, ["answer_correctness"])
+                            },
+                        }
                         await _save_result(nan_result)
                         _nan_final[0] += 1
                     return
                 await _save_result(result)
 
             _es_target = getattr(args, "early_stop_target", None)
-            _es_min_n  = getattr(args, "early_stop_min_n", 500)
+            _es_min_n = getattr(args, "early_stop_min_n", 500)
 
             async def _check_early_stop():
                 import math as _math
+
                 if _es_target is None or len(done) < _es_min_n:
                     return
                 _scores = [
-                    v["answer_correctness"] for v in done.values()
+                    v["answer_correctness"]
+                    for v in done.values()
                     if "answer_correctness" in v
                     and isinstance(v["answer_correctness"], float)
                     and not _math.isnan(v["answer_correctness"])
@@ -3734,19 +4264,32 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
                 if len(_scores) < _es_min_n:
                     return
                 completed = _completed[0]
-                _n    = len(_scores)
+                _n = len(_scores)
                 _mean = sum(_scores) / _n
-                _var  = sum((s - _mean) ** 2 for s in _scores) / _n
-                _se   = _math.sqrt(_var / _n) if _var > 0 else 0.0
-                _uci  = _mean + 1.645 * _se
+                _var = sum((s - _mean) ** 2 for s in _scores) / _n
+                _se = _math.sqrt(_var / _n) if _var > 0 else 0.0
+                _uci = _mean + 1.645 * _se
                 _n_remaining = len(pending) - completed
-                _max_possible = (_n * _mean + _n_remaining) / (_n + _n_remaining) if (_n + _n_remaining) > 0 else 0.0
-                print(f"  [early-stop] n={_n} mean={_mean:.4f} upper_95={_uci:.4f} max_possible={_max_possible:.4f} target={_es_target:.4f}", flush=True)
+                _max_possible = (
+                    (_n * _mean + _n_remaining) / (_n + _n_remaining)
+                    if (_n + _n_remaining) > 0
+                    else 0.0
+                )
+                print(
+                    f"  [early-stop] n={_n} mean={_mean:.4f} upper_95={_uci:.4f} max_possible={_max_possible:.4f} target={_es_target:.4f}",
+                    flush=True,
+                )
                 if _max_possible < _es_target:
-                    print(f"\n=== EARLY STOP: max_possible {_max_possible:.4f} < target {_es_target:.4f} — mathematically impossible to win ===", flush=True)
+                    print(
+                        f"\n=== EARLY STOP: max_possible {_max_possible:.4f} < target {_es_target:.4f} — mathematically impossible to win ===",
+                        flush=True,
+                    )
                     sys.exit(2)
                 if _uci < _es_target:
-                    print(f"\n=== EARLY STOP: upper_95 CI {_uci:.4f} < target {_es_target:.4f} — aborting ===", flush=True)
+                    print(
+                        f"\n=== EARLY STOP: upper_95 CI {_uci:.4f} < target {_es_target:.4f} — aborting ===",
+                        flush=True,
+                    )
                     sys.exit(2)
 
             await _aio.gather(*[_eval_and_save(r) for r in pending], return_exceptions=True)
@@ -3755,19 +4298,30 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
             for _pass in range(5):
                 if not _deferred:
                     break
-                print(f"\n[eval] Deferred pass {_pass+1}: {len(_deferred)} items — sleeping 30s before retry", flush=True)
+                print(
+                    f"\n[eval] Deferred pass {_pass + 1}: {len(_deferred)} items — sleeping 30s before retry",
+                    flush=True,
+                )
                 await _aio.sleep(30)
                 current = _deferred[:]
                 _deferred.clear()
-                await _aio.gather(*[_eval_and_save(r, attempt) for r, attempt in current], return_exceptions=True)
+                await _aio.gather(
+                    *[_eval_and_save(r, attempt) for r, attempt in current], return_exceptions=True
+                )
 
             if _deferred:
                 # Any still deferred after 5 passes: record as timeout_exhausted
                 for r, _ in _deferred:
                     qtype = r.get("question_type", "?")
-                    nan_result = {"id": r["id"], "question_type": qtype,
-                                 "nan_reason": "timeout_exhausted",
-                                 **{k: float("nan") for k in METRIC_CONFIG.get(qtype, ["answer_correctness"])}}
+                    nan_result = {
+                        "id": r["id"],
+                        "question_type": qtype,
+                        "nan_reason": "timeout_exhausted",
+                        **{
+                            k: float("nan")
+                            for k in METRIC_CONFIG.get(qtype, ["answer_correctness"])
+                        },
+                    }
                     await _save_result(nan_result)
                     _nan_final[0] += 1
 
@@ -3781,8 +4335,18 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
     aggregated: dict[str, dict] = {}
     for qtype, items in by_type.items():
         agg: dict[str, float] = {}
-        for key in ["rouge_score", "answer_correctness", "typed_score", "coverage_score", "faithfulness"]:
-            vals = [i[key] for i in items if key in i and not (isinstance(i[key], float) and i[key] != i[key])]
+        for key in [
+            "rouge_score",
+            "answer_correctness",
+            "typed_score",
+            "coverage_score",
+            "faithfulness",
+        ]:
+            vals = [
+                i[key]
+                for i in items
+                if key in i and not (isinstance(i[key], float) and i[key] != i[key])
+            ]
             if vals:
                 agg[key] = float(np.nanmean(vals))
         aggregated[qtype] = agg
@@ -3804,10 +4368,14 @@ def cmd_bench_eval(args: argparse.Namespace) -> None:
             con.execute(
                 "INSERT INTO eval_scores VALUES (?,?,?,?,?,?,?,?,?)",
                 [
-                    item.get("id"), item.get("question_type"),
-                    item.get("answer_correctness"), item.get("rouge_score"),
-                    item.get("coverage_score"), item.get("faithfulness"),
-                    item.get("nan_reason"), item.get("decomposed_score"),
+                    item.get("id"),
+                    item.get("question_type"),
+                    item.get("answer_correctness"),
+                    item.get("rouge_score"),
+                    item.get("coverage_score"),
+                    item.get("faithfulness"),
+                    item.get("nan_reason"),
+                    item.get("decomposed_score"),
                     item.get("decomposed_detail"),
                 ],
             )
@@ -3826,33 +4394,48 @@ def cmd_prep_nan_reeval(args: argparse.Namespace) -> None:
     will skip the already-good questions and only evaluate the NaN ones.
     """
     import math as _math
-    out_dir     = Path(args.out_dir)
+
+    out_dir = Path(args.out_dir)
     results_dir = out_dir / "results"
-    run_name    = args.run_name
-    run_db      = _run_db_path(out_dir / "data", run_name)
-    ckpt_f      = results_dir / f"bench_eval_ckpt_{run_name}.jsonl"
-    bench_eval  = results_dir / f"bench_eval_{run_name}.json"
+    run_name = args.run_name
+    run_db = _run_db_path(out_dir / "data", run_name)
+    ckpt_f = results_dir / f"bench_eval_ckpt_{run_name}.jsonl"
+    bench_eval = results_dir / f"bench_eval_{run_name}.json"
 
     if not run_db.exists():
         print(f"Missing DB: {run_db}")
         return
 
     import duckdb as _ddb
+
     con = _ddb.connect(str(run_db), read_only=True)
     try:
         rows = con.execute(
             "SELECT id, question_type, answer_correctness, rouge_score, "
             "coverage_score, faithfulness, nan_reason FROM eval_scores"
         ).fetchall()
-        cols = ["id", "question_type", "answer_correctness", "rouge_score",
-                "coverage_score", "faithfulness", "nan_reason"]
+        cols = [
+            "id",
+            "question_type",
+            "answer_correctness",
+            "rouge_score",
+            "coverage_score",
+            "faithfulness",
+            "nan_reason",
+        ]
     except Exception:
         rows = con.execute(
             "SELECT id, question_type, answer_correctness, rouge_score, "
             "coverage_score, faithfulness FROM eval_scores"
         ).fetchall()
-        cols = ["id", "question_type", "answer_correctness", "rouge_score",
-                "coverage_score", "faithfulness"]
+        cols = [
+            "id",
+            "question_type",
+            "answer_correctness",
+            "rouge_score",
+            "coverage_score",
+            "faithfulness",
+        ]
     con.close()
     good, nan_ids = [], []
     for row in rows:
@@ -3875,7 +4458,9 @@ def cmd_prep_nan_reeval(args: argparse.Namespace) -> None:
         bench_eval.unlink()
 
     print(f"{run_name}: {len(good)} good kept in checkpoint, {len(nan_ids)} NaN queued for re-eval")
-    print(f"  Run: python demo/graphrag_bench.py eval --out-dir {out_dir} --run-name {run_name} ...")
+    print(
+        f"  Run: python demo/graphrag_bench.py eval --out-dir {out_dir} --run-name {run_name} ..."
+    )
 
 
 def cmd_backfill_db(args: argparse.Namespace) -> None:
@@ -3885,12 +4470,12 @@ def cmd_backfill_db(args: argparse.Namespace) -> None:
     returns nan. Reads work/results/{name}.jsonl and bench_eval_ckpt_{name}.jsonl,
     creates work/data/runs/{name}.duckdb with both results and eval_scores tables.
     """
-    out_dir      = Path(args.out_dir)
-    results_dir  = out_dir / "results"
-    run_name     = args.run_name
-    results_f    = results_dir / f"{run_name}.jsonl"
-    ckpt_f       = results_dir / f"bench_eval_ckpt_{run_name}.jsonl"
-    run_db       = _run_db_path(out_dir / "data", run_name)
+    out_dir = Path(args.out_dir)
+    results_dir = out_dir / "results"
+    run_name = args.run_name
+    results_f = results_dir / f"{run_name}.jsonl"
+    ckpt_f = results_dir / f"bench_eval_ckpt_{run_name}.jsonl"
+    run_db = _run_db_path(out_dir / "data", run_name)
 
     if not results_f.exists():
         print(f"Missing: {results_f}")
@@ -3904,15 +4489,24 @@ def cmd_backfill_db(args: argparse.Namespace) -> None:
     _write_results_to_db(run_db, records)
 
     import duckdb as _ddb
+
     con = _ddb.connect(str(run_db))
     eval_rows = [json.loads(l) for l in open(ckpt_f)]
     for r in eval_rows:
         con.execute("DELETE FROM eval_scores WHERE id = ?", [r["id"]])
         con.execute(
             "INSERT INTO eval_scores VALUES (?,?,?,?,?,?,?,?,?)",
-            [r["id"], r.get("question_type"), r.get("answer_correctness"),
-             r.get("rouge_score"), r.get("coverage_score"), r.get("faithfulness"),
-             r.get("nan_reason"), r.get("decomposed_score"), r.get("decomposed_detail")],
+            [
+                r["id"],
+                r.get("question_type"),
+                r.get("answer_correctness"),
+                r.get("rouge_score"),
+                r.get("coverage_score"),
+                r.get("faithfulness"),
+                r.get("nan_reason"),
+                r.get("decomposed_score"),
+                r.get("decomposed_detail"),
+            ],
         )
     con.close()
     print(f"Backfilled {len(records)} results + {len(eval_rows)} eval_scores → {run_db}")
@@ -3926,12 +4520,14 @@ def cmd_score(args: argparse.Namespace) -> None:
     """
     import math as _math
     from collections import defaultdict as _dd
+
     data_dir = Path(args.out_dir) / "data"
-    run_db   = data_dir / "runs" / f"{args.run_name}.duckdb"
+    run_db = data_dir / "runs" / f"{args.run_name}.duckdb"
     if not run_db.exists():
         print("nan")
         return
     import duckdb as _ddb
+
     con = _ddb.connect(str(run_db), read_only=True)
     try:
         rows = con.execute(
@@ -3949,7 +4545,10 @@ def cmd_score(args: argparse.Namespace) -> None:
             continue
         subset = "Med" if source and "medical" in str(source).lower() else "Nov"
         by_st[(subset, qtype)].append(float(ac))
-    def _m(lst): return sum(lst) / len(lst) if lst else float("nan")  # noqa
+
+    def _m(lst):
+        return sum(lst) / len(lst) if lst else float("nan")  # noqa
+
     qtypes = ["Fact Retrieval", "Complex Reasoning", "Contextual Summarize", "Creative Generation"]
     med_vals = [_m(by_st[(s, qt)]) for s in ["Med"] for qt in qtypes]
     nov_vals = [_m(by_st[(s, qt)]) for s in ["Nov"] for qt in qtypes]
@@ -3967,7 +4566,7 @@ def cmd_make_order(args: argparse.Namespace) -> None:
     Interleaves questions by (subset × question_type) so any prefix of N questions
     has the same stratum distribution as the full set.
     """
-    out_dir  = Path(args.out_dir)
+    out_dir = Path(args.out_dir)
     data_dir = out_dir / "data"
     out_file = Path(args.output) if args.output else data_dir / "full_corpus_stratified_order.json"
 
@@ -4010,18 +4609,19 @@ def cmd_make_order(args: argparse.Namespace) -> None:
 
 def cmd_bench_report(args: argparse.Namespace) -> None:
     """Combined matrix: our runs + full leaderboard, scored with benchmark's native metric."""
-    out_dir     = Path(args.out_dir)
-    data_dir    = out_dir / "data"
+    out_dir = Path(args.out_dir)
+    data_dir = out_dir / "data"
     results_dir = out_dir / "results"
 
     # Discover run DBs first, fall back to legacy bench_eval_*.json
-    run_filter:  str | None = getattr(args, "filter", None)
+    run_filter: str | None = getattr(args, "filter", None)
     run_exclude: str | None = getattr(args, "exclude", None)
     run_results: dict[str, dict] = {}
     runs_dir = data_dir / "runs"
     if runs_dir.exists():
         import duckdb as _ddb
         import numpy as _np
+
         for run_db in sorted(runs_dir.glob("*.duckdb")):
             rn = run_db.stem
             if run_filter and run_filter not in rn:
@@ -4036,10 +4636,13 @@ def cmd_bench_report(args: argparse.Namespace) -> None:
                         "FROM eval_scores e JOIN results r ON e.id = r.id"
                     ).fetchall()
                 except Exception:
-                    rows = [(qt, src, ac, None) for qt, src, ac in con.execute(
-                        "SELECT e.question_type, r.source, e.answer_correctness "
-                        "FROM eval_scores e JOIN results r ON e.id = r.id"
-                    ).fetchall()]
+                    rows = [
+                        (qt, src, ac, None)
+                        for qt, src, ac in con.execute(
+                            "SELECT e.question_type, r.source, e.answer_correctness "
+                            "FROM eval_scores e JOIN results r ON e.id = r.id"
+                        ).fetchall()
+                    ]
                 total_results = con.execute("SELECT COUNT(*) FROM results").fetchone()[0]
                 con.close()
             except Exception:
@@ -4049,6 +4652,7 @@ def cmd_bench_report(args: argparse.Namespace) -> None:
             n_eval = len(rows)
             n_nan = sum(1 for _, _, ac, _ in rows if ac is None or ac != ac)
             from collections import Counter as _Counter
+
             nan_reasons = _Counter(nr for _, _, ac, nr in rows if (ac is None or ac != ac) and nr)
             # by_subset_type[(source, qtype)] -> [ac, ...]
             by_st: dict[tuple, list] = {}
@@ -4059,19 +4663,30 @@ def cmd_bench_report(args: argparse.Namespace) -> None:
                         by_st[key] = []
                     if ac is not None and ac == ac:
                         by_st[key].append(ac)
-            def _mean(lst): return float(_np.mean(lst)) if lst else float("nan")  # noqa
+
+            def _mean(lst):
+                return float(_np.mean(lst)) if lst else float("nan")  # noqa
+
             scores_st = {k: _mean(v) for k, v in by_st.items()}
-            run_results[rn] = {"scores_st": scores_st, "n_eval": n_eval, "n_total": total_results,
-                               "n_nan": n_nan, "nan_reasons": dict(nan_reasons)}
+            run_results[rn] = {
+                "scores_st": scores_st,
+                "n_eval": n_eval,
+                "n_total": total_results,
+                "n_nan": n_nan,
+                "nan_reasons": dict(nan_reasons),
+            }
 
     # Legacy bench_eval_*.json — no Med/Nov split, but load All-level scores for comparison
     import json as _json
+
     QTYPE_MAP = {
-        "Fact Retrieval": "Fact", "Complex Reasoning": "Rsn",
-        "Contextual Summarize": "Summ", "Creative Generation": "Crea",
+        "Fact Retrieval": "Fact",
+        "Complex Reasoning": "Rsn",
+        "Contextual Summarize": "Summ",
+        "Creative Generation": "Crea",
     }
     for jf in sorted((results_dir).glob("bench_eval_*.json")):
-        rn = jf.stem[len("bench_eval_"):]
+        rn = jf.stem[len("bench_eval_") :]
         if rn in run_results:
             continue  # already loaded from DuckDB
         if run_filter and run_filter not in rn:
@@ -4093,15 +4708,21 @@ def cmd_bench_report(args: argparse.Namespace) -> None:
                 type_scores.append(ac)
         if type_scores:
             import numpy as _np2
+
             scores_st[("All", "All")] = float(_np2.mean(type_scores))
         if scores_st:
-            run_results[rn] = {"scores_st": scores_st, "n_eval": n_eval, "n_total": n_eval, "legacy": True}
+            run_results[rn] = {
+                "scores_st": scores_st,
+                "n_eval": n_eval,
+                "n_total": n_eval,
+                "legacy": True,
+            }
 
     QTYPES = [
-        ("Fact Retrieval",       "Fact"),
-        ("Complex Reasoning",    "Rsn"),
+        ("Fact Retrieval", "Fact"),
+        ("Complex Reasoning", "Rsn"),
         ("Contextual Summarize", "Summ"),
-        ("Creative Generation",  "Crea"),
+        ("Creative Generation", "Crea"),
     ]
     SUBSETS = ["Med", "Nov", "All"]
 
@@ -4137,11 +4758,17 @@ def cmd_bench_report(args: argparse.Namespace) -> None:
         n_nan = info.get("n_nan", 0)
         nan_reasons = info.get("nan_reasons", {})
         if nan_reasons:
-            reason_str = " " + "+".join(f"{v}{k[0].upper()}" for k, v in sorted(nan_reasons.items()))
+            reason_str = " " + "+".join(
+                f"{v}{k[0].upper()}" for k, v in sorted(nan_reasons.items())
+            )
         else:
             reason_str = ""
         nan_str = f", {n_nan} NaN{reason_str}" if n_nan else ""
-        partial = f" ({n_eval}/{n_total}{nan_str})" if n_total and (n_eval < n_total or n_nan) else (f" ({n_nan} NaN{reason_str})" if n_nan else "")
+        partial = (
+            f" ({n_eval}/{n_total}{nan_str})"
+            if n_total and (n_eval < n_total or n_nan)
+            else (f" ({n_nan} NaN{reason_str})" if n_nan else "")
+        )
         parts = []
         for subset in SUBSETS:
             for qt, _ in QTYPES:
@@ -4158,17 +4785,20 @@ def cmd_bench_report(args: argparse.Namespace) -> None:
     for name, scores in PUBLISHED_BASELINES.items():
         med = f"{scores['med_acc']:.3f}" if scores["med_acc"] is not None else "   —"
         nov = f"{scores['nov_acc']:.3f}" if scores["nov_acc"] is not None else "   —"
-        ov  = f"{scores['overall']:.3f}" if scores["overall"] is not None else "   —"
+        ov = f"{scores['overall']:.3f}" if scores["overall"] is not None else "   —"
         print(f"  {name:<28}  {med:>8}  {nov:>8}  {ov:>8}")
 
     print("\n  * Leaderboard: gpt-4o-mini generator + gpt-4o-mini judge (arXiv:2506.05690).")
-    print("  * Our bench-eval: gpt-4o-mini generator + gpt-4o-mini judge, answer_correctness metric.")
+    print(
+        "  * Our bench-eval: gpt-4o-mini generator + gpt-4o-mini judge, answer_correctness metric."
+    )
     print("  * Overall = mean(Med, Nov); Med/Nov = mean of 4 question-type ACC scores.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Together dedicated endpoint lifecycle
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def cmd_nan_bias_report(args: argparse.Namespace) -> None:
     """Assess whether NaN questions introduce score bias across runs.
@@ -4188,7 +4818,7 @@ def cmd_nan_bias_report(args: argparse.Namespace) -> None:
     runs_dir = _Path(args.out_dir) / "data" / "runs"
     import duckdb as _ddb
 
-    run_filter  = getattr(args, "filter", None)
+    run_filter = getattr(args, "filter", None)
     run_exclude = getattr(args, "exclude", None)
 
     # Load per-question answer_correctness for every available run
@@ -4198,31 +4828,43 @@ def cmd_nan_bias_report(args: argparse.Namespace) -> None:
         if str(db).endswith(".wal"):
             continue
         rn = db.stem
-        if run_filter  and run_filter  not in rn: continue
-        if run_exclude and run_exclude in rn:      continue
+        if run_filter and run_filter not in rn:
+            continue
+        if run_exclude and run_exclude in rn:
+            continue
         try:
             con = _ddb.connect(str(db), read_only=True)
-            rows = con.execute(
-                "SELECT id, answer_correctness FROM eval_scores"
-            ).fetchall()
+            rows = con.execute("SELECT id, answer_correctness FROM eval_scores").fetchall()
             con.close()
         except Exception:
             continue
         if not rows:
             continue
-        run_data[rn] = {qid: (float("nan") if (ac is None or (isinstance(ac, float) and _math.isnan(ac))) else float(ac))
-                        for qid, ac in rows}
+        run_data[rn] = {
+            qid: (
+                float("nan")
+                if (ac is None or (isinstance(ac, float) and _math.isnan(ac)))
+                else float(ac)
+            )
+            for qid, ac in rows
+        }
 
     if len(run_data) < 2:
         print("Need at least 2 runs with eval_scores. Aborting.")
         return
 
     run_names = sorted(run_data.keys())
-    nan_sets: dict[str, set] = {rn: {q for q, v in run_data[rn].items() if _math.isnan(v)}
-                                 for rn in run_names}
+    nan_sets: dict[str, set] = {
+        rn: {q for q, v in run_data[rn].items() if _math.isnan(v)} for rn in run_names
+    }
 
     def _short(name: str) -> str:
-        return name.replace("nobc_ner_ref_rerank_", "").replace("nobc_", "").replace("_full", "").replace("_grid", "")
+        return (
+            name.replace("nobc_ner_ref_rerank_", "")
+            .replace("nobc_", "")
+            .replace("_full", "")
+            .replace("_grid", "")
+        )
 
     # ── 1. NaN set sizes ──────────────────────────────────────────────────────
     print("\n── NaN set sizes ──\n")
@@ -4231,7 +4873,7 @@ def cmd_nan_bias_report(args: argparse.Namespace) -> None:
     for rn in run_names:
         total = len(run_data[rn])
         n_nan = len(nan_sets[rn])
-        pct   = 100 * n_nan / total if total else 0
+        pct = 100 * n_nan / total if total else 0
         print(f"  {_short(rn):<48}  {n_nan:>5}  {total:>6}  {pct:>4.1f}%")
 
     # ── 2. Pairwise Jaccard overlap of NaN sets ───────────────────────────────
@@ -4266,7 +4908,7 @@ def cmd_nan_bias_report(args: argparse.Namespace) -> None:
             continue
         # Gather scores for nan_qs from all OTHER runs (where they are non-NaN)
         nan_q_scores: list[float] = []
-        all_scores:   list[float] = []
+        all_scores: list[float] = []
         for other in run_names:
             if other == rn:
                 continue
@@ -4281,20 +4923,24 @@ def cmd_nan_bias_report(args: argparse.Namespace) -> None:
         if not nan_q_scores:
             print(f"  {_short(rn):<48}  {'(no overlap)':>10}")
             continue
-        nan_mean  = float(_np.mean(nan_q_scores))
-        all_mean  = float(_np.mean(all_scores)) if all_scores else float("nan")
-        delta     = nan_mean - all_mean
+        nan_mean = float(_np.mean(nan_q_scores))
+        all_mean = float(_np.mean(all_scores)) if all_scores else float("nan")
+        delta = nan_mean - all_mean
         # positive delta: NaN questions score ABOVE average elsewhere → skipping them deflated this run
         # negative delta: NaN questions score BELOW average elsewhere → skipping them inflated this run
-        flag = " ▲ inflated" if delta < -0.005 else (" ▼ deflated" if delta > 0.005 else " ≈ neutral")
-        print(f"  {_short(rn):<48}  {nan_mean:>10.4f}  {all_mean:>12.4f}  {delta:>+7.4f}{flag}  {len(nan_q_scores):>6}")
+        flag = (
+            " ▲ inflated" if delta < -0.005 else (" ▼ deflated" if delta > 0.005 else " ≈ neutral")
+        )
+        print(
+            f"  {_short(rn):<48}  {nan_mean:>10.4f}  {all_mean:>12.4f}  {delta:>+7.4f}{flag}  {len(nan_q_scores):>6}"
+        )
 
     # ── 4. MCAR summary ──────────────────────────────────────────────────────
     # If NaN sets are highly overlapping (mean pairwise Jaccard high), missingness
     # is systematic (same questions always fail) → MCAR across runs, bias is consistent.
     all_jaccards = []
     for i, ra in enumerate(run_names):
-        for rb in run_names[i+1:]:
+        for rb in run_names[i + 1 :]:
             inter = len(nan_sets[ra] & nan_sets[rb])
             union = len(nan_sets[ra] | nan_sets[rb])
             if union:
@@ -4303,7 +4949,9 @@ def cmd_nan_bias_report(args: argparse.Namespace) -> None:
     print("\n── Summary ──\n")
     print(f"  Mean pairwise NaN-set Jaccard: {mean_j:.3f}")
     if mean_j >= 0.5:
-        print("  Interpretation: NaN questions are largely the same across runs (systematic parse failures).")
+        print(
+            "  Interpretation: NaN questions are largely the same across runs (systematic parse failures)."
+        )
         print("  Scores are comparable — the same questions are excluded from all runs.")
     elif mean_j >= 0.2:
         print("  Interpretation: Moderate overlap — some systematic, some run-specific NaN.")
@@ -4330,7 +4978,7 @@ def cmd_corrected_report(args: argparse.Namespace) -> None:
     runs_dir = _Path(args.out_dir) / "data" / "runs"
     import duckdb as _ddb
 
-    run_filter  = getattr(args, "filter",  None)
+    run_filter = getattr(args, "filter", None)
     run_exclude = getattr(args, "exclude", None)
 
     # Load per-question {id: (subset, qtype, ac)} for every run
@@ -4342,8 +4990,10 @@ def cmd_corrected_report(args: argparse.Namespace) -> None:
         if str(db).endswith(".wal"):
             continue
         rn = db.stem
-        if run_filter  and run_filter  not in rn: continue
-        if run_exclude and run_exclude in rn:      continue
+        if run_filter and run_filter not in rn:
+            continue
+        if run_exclude and run_exclude in rn:
+            continue
         try:
             con = _ddb.connect(str(db), read_only=True)
             try:
@@ -4361,7 +5011,11 @@ def cmd_corrected_report(args: argparse.Namespace) -> None:
         d: RunQ = {}
         for qid, source, qtype, ac in rows:
             subset = "Med" if source and "medical" in str(source).lower() else "Nov"
-            val    = float("nan") if (ac is None or (isinstance(ac, float) and _math.isnan(ac))) else float(ac)
+            val = (
+                float("nan")
+                if (ac is None or (isinstance(ac, float) and _math.isnan(ac)))
+                else float(ac)
+            )
             d[qid] = (subset, qtype, val)
         run_data[rn] = d
 
@@ -4382,10 +5036,11 @@ def cmd_corrected_report(args: argparse.Namespace) -> None:
 
     def _balanced_mean(scores_by_st: dict) -> float:
         """(Med_mean + Nov_mean) / 2 where each subset mean = mean of 4 qtype means."""
+
         def _subset(s):
-            vals = [_np.mean(scores_by_st[(s, qt)]) for qt in QTYPES
-                    if scores_by_st.get((s, qt))]
+            vals = [_np.mean(scores_by_st[(s, qt)]) for qt in QTYPES if scores_by_st.get((s, qt))]
             return float(_np.mean(vals)) if vals else float("nan")
+
         med = _subset("Med")
         nov = _subset("Nov")
         if _math.isnan(med) or _math.isnan(nov):
@@ -4396,12 +5051,16 @@ def cmd_corrected_report(args: argparse.Namespace) -> None:
         """Return (balanced_mean, n_imputed). impute=False gives raw score."""
         scores_by_st: dict[tuple, list] = _dd(list)
         n_imputed = 0
-        overall_fallback = float(_np.mean([v for _, _, v in d.values() if not _math.isnan(v)]) or float("nan"))
+        overall_fallback = float(
+            _np.mean([v for _, _, v in d.values() if not _math.isnan(v)]) or float("nan")
+        )
         for qid, (subset, qtype, v) in d.items():
             if not _math.isnan(v):
                 scores_by_st[(subset, qtype)].append(v)
             elif impute:
-                others = [s for s in cross[qid] if True]  # all runs incl. self already excluded by being NaN
+                others = [
+                    s for s in cross[qid] if True
+                ]  # all runs incl. self already excluded by being NaN
                 imp = float(_np.mean(others)) if others else overall_fallback
                 if not _math.isnan(imp):
                     scores_by_st[(subset, qtype)].append(imp)
@@ -4409,10 +5068,12 @@ def cmd_corrected_report(args: argparse.Namespace) -> None:
         return _balanced_mean(scores_by_st), n_imputed
 
     def _short(name: str) -> str:
-        return (name.replace("nobc_ner_ref_rerank_", "")
-                    .replace("nobc_", "")
-                    .replace("_full", "")
-                    .replace("_grid", ""))
+        return (
+            name.replace("nobc_ner_ref_rerank_", "")
+            .replace("nobc_", "")
+            .replace("_full", "")
+            .replace("_grid", "")
+        )
 
     print("\n── Bias-corrected scores (cross-run imputation of NaN questions) ──\n")
     print(f"  {'Run':<48}  {'Raw':>6}  {'Corrected':>9}  {'Delta':>7}  {'N imputed':>10}")
@@ -4421,17 +5082,19 @@ def cmd_corrected_report(args: argparse.Namespace) -> None:
     rows_out = []
     for rn in run_names:
         d = run_data[rn]
-        raw,       _  = _score_run(d, impute=False)
+        raw, _ = _score_run(d, impute=False)
         corrected, ni = _score_run(d, impute=True)
-        delta = corrected - raw if not (_math.isnan(raw) or _math.isnan(corrected)) else float("nan")
+        delta = (
+            corrected - raw if not (_math.isnan(raw) or _math.isnan(corrected)) else float("nan")
+        )
         rows_out.append((rn, raw, corrected, delta, ni))
 
     # Sort by corrected score descending
     rows_out.sort(key=lambda r: -r[2] if not _math.isnan(r[2]) else -999)
     for rn, raw, corrected, delta, ni in rows_out:
-        r_str = f"{raw:.4f}"       if not _math.isnan(raw)       else "  —   "
+        r_str = f"{raw:.4f}" if not _math.isnan(raw) else "  —   "
         c_str = f"{corrected:.4f}" if not _math.isnan(corrected) else "  —   "
-        d_str = f"{delta:+.4f}"    if not _math.isnan(delta)     else "  —   "
+        d_str = f"{delta:+.4f}" if not _math.isnan(delta) else "  —   "
         print(f"  {_short(rn):<48}  {r_str:>6}  {c_str:>9}  {d_str:>7}  {ni:>10}")
 
     print()
@@ -4442,8 +5105,9 @@ def cmd_corrected_report(args: argparse.Namespace) -> None:
 def cmd_use_endpoints(args: argparse.Namespace) -> None:
     """Run benchmark using pre-existing Together dedicated endpoints."""
     import types
+
     run_name = getattr(args, "run_name", "contextual")
-    rerank   = getattr(args, "rerank", False)
+    rerank = getattr(args, "rerank", False)
     enhanced = getattr(args, "enhanced", False)
     run_args = types.SimpleNamespace(
         out_dir=args.out_dir,
@@ -4493,8 +5157,8 @@ def cmd_provision(args: argparse.Namespace) -> None:
     print(f"Creating {n} dedicated endpoint(s) for {args.model} on {args.hardware}...")
     with ThreadPoolExecutor(max_workers=n) as ex:
         ep_tuples = list(ex.map(_create_one, range(n)))
-    endpoint_ids   = [t[0] for t in ep_tuples]   # internal IDs for lifecycle ops
-    endpoint_names = [t[1] for t in ep_tuples]   # names for API model param
+    endpoint_ids = [t[0] for t in ep_tuples]  # internal IDs for lifecycle ops
+    endpoint_names = [t[1] for t in ep_tuples]  # names for API model param
     print(f"Endpoints created (ids): {endpoint_ids}")
     print(f"Endpoint names: {endpoint_names}")
 
@@ -4523,11 +5187,11 @@ def cmd_provision(args: argparse.Namespace) -> None:
     print(f"\n{len(endpoint_ids)} endpoint(s) ready. Starting benchmark...")
 
     try:
-        args.gen_provider  = "together"
-        args.gen_model     = endpoint_names[0]   # fallback for single-endpoint path
-        args.endpoint_ids  = endpoint_names       # names are used as model param
-        args.concurrency   = args.concurrency * len(endpoint_names)
-        args.limit         = None
+        args.gen_provider = "together"
+        args.gen_model = endpoint_names[0]  # fallback for single-endpoint path
+        args.endpoint_ids = endpoint_names  # names are used as model param
+        args.concurrency = args.concurrency * len(endpoint_names)
+        args.limit = None
         cmd_run(args)
 
         eval_args = types.SimpleNamespace(
@@ -4554,8 +5218,8 @@ def cmd_prime_cache(args: argparse.Namespace) -> None:
 
     from chonk.ner import SpacyMatcher
 
-    out_dir   = Path(args.out_dir)
-    data_dir  = out_dir / "data"
+    out_dir = Path(args.out_dir)
+    data_dir = out_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
     embed_model_name = args.embed_model or EMBED_MODEL
@@ -4565,19 +5229,31 @@ def cmd_prime_cache(args: argparse.Namespace) -> None:
     if not _embed_device:
         try:
             import torch
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and not torch.cuda.is_available():
+
+            if (
+                hasattr(torch.backends, "mps")
+                and torch.backends.mps.is_available()
+                and not torch.cuda.is_available()
+            ):
                 _embed_device = "cpu"
         except ImportError:
             pass
 
-    print(f"Loading embed model: {embed_model_name}" + (f" [{_embed_device}]" if _embed_device else ""))
-    embed_model = SentenceTransformer(embed_model_name, device=_embed_device) if _embed_device else SentenceTransformer(embed_model_name)
+    print(
+        f"Loading embed model: {embed_model_name}"
+        + (f" [{_embed_device}]" if _embed_device else "")
+    )
+    embed_model = (
+        SentenceTransformer(embed_model_name, device=_embed_device)
+        if _embed_device
+        else SentenceTransformer(embed_model_name)
+    )
 
     # ── Question embeddings ───────────────────────────────────────────────────
-    corpus_qs  = _load_questions(data_dir)
+    corpus_qs = _load_questions(data_dir)
     corpus_ids = [q.get("id", f"q{i}") for i, q in enumerate(corpus_qs)]
     q_vecs_cache = data_dir / "question_embeddings.npy"
-    q_ids_cache  = data_dir / "question_ids.json"
+    q_ids_cache = data_dir / "question_ids.json"
 
     if q_vecs_cache.exists() and q_ids_cache.exists():
         if json.loads(q_ids_cache.read_text()) == corpus_ids:
@@ -4591,14 +5267,16 @@ def cmd_prime_cache(args: argparse.Namespace) -> None:
         print(f"Embedding {len(corpus_qs)} questions...")
         q_vecs = embed_model.encode(
             [q["question"] for q in corpus_qs],
-            normalize_embeddings=True, show_progress_bar=True, batch_size=256,
+            normalize_embeddings=True,
+            show_progress_bar=True,
+            batch_size=256,
         ).astype("float32")
         np.save(str(q_vecs_cache), q_vecs)
         q_ids_cache.write_text(json.dumps(corpus_ids), encoding="utf-8")
         print(f"Saved → {q_vecs_cache.name}")
 
     # ── Entity embeddings ─────────────────────────────────────────────────────
-    cache_key    = hashlib.md5(
+    cache_key = hashlib.md5(
         (embed_model_name + spacy_model_name + json.dumps(corpus_ids)).encode()
     ).hexdigest()[:16]
     ent_vecs_cache = data_dir / f"entity_vecs_{cache_key}.npz"
@@ -4614,13 +5292,15 @@ def cmd_prime_cache(args: argparse.Namespace) -> None:
             qid = corpus_ids[i]
             q_entities_by_id[qid] = [m.name for m in ner.match(q["question"])]
             if (i + 1) % 500 == 0 or (i + 1) == len(corpus_qs):
-                print(f"  NER {i+1}/{len(corpus_qs)}", flush=True)
+                print(f"  NER {i + 1}/{len(corpus_qs)}", flush=True)
 
         all_unique_ents = list({e for ents in q_entities_by_id.values() for e in ents})
         print(f"Batch-embedding {len(all_unique_ents)} unique entities...")
         ent_vecs = embed_model.encode(
-            all_unique_ents, normalize_embeddings=True,
-            show_progress_bar=True, batch_size=256,
+            all_unique_ents,
+            normalize_embeddings=True,
+            show_progress_bar=True,
+            batch_size=256,
         ).astype("float32")
         np.savez(str(ent_vecs_cache), strings=np.array(all_unique_ents), vecs=ent_vecs)
         ent_ents_cache.write_text(json.dumps(q_entities_by_id), encoding="utf-8")
@@ -4632,6 +5312,7 @@ def cmd_prime_cache(args: argparse.Namespace) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # run-all and init-config commands
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def cmd_run_all(args: argparse.Namespace) -> None:
     import subprocess as _subprocess
@@ -4663,6 +5344,7 @@ def cmd_run_all(args: argparse.Namespace) -> None:
         if eval_file.exists():
             try:
                 import json as _json
+
                 _ev = _json.loads(eval_file.read_text())
                 _n = _ev.get("_params", {}).get("n_evaluated", 0)
             except Exception:
@@ -4675,6 +5357,7 @@ def cmd_run_all(args: argparse.Namespace) -> None:
 
         try:
             import torch as _torch
+
             if _torch.cuda.is_available():
                 _torch.cuda.empty_cache()
                 _torch.cuda.synchronize()
@@ -4689,17 +5372,25 @@ def cmd_run_all(args: argparse.Namespace) -> None:
             else:
                 print(f"=== RUN {run_name} ===")
             cmd = [
-                _sys.executable, __file__, "run",
-                "--out-dir", str(out_dir),
-                "--config", str(toml_path),
-                "--run-name", run_name,
+                _sys.executable,
+                __file__,
+                "run",
+                "--out-dir",
+                str(out_dir),
+                "--config",
+                str(toml_path),
+                "--run-name",
+                run_name,
             ] + (["--question-ids", args.question_ids] if args.question_ids else [])
             ret = _subprocess.run(cmd)
             if ret.returncode != 0:
-                print(f"=== CRASH {run_name} (exit {ret.returncode}) — marking failed, skipping ===")
+                print(
+                    f"=== CRASH {run_name} (exit {ret.returncode}) — marking failed, skipping ==="
+                )
                 crash_marker.write_text(f"exit={ret.returncode}")
                 try:
                     import torch as _torch
+
                     if _torch.cuda.is_available():
                         _torch.cuda.empty_cache()
                         _torch.cuda.synchronize()
@@ -4715,18 +5406,28 @@ def cmd_run_all(args: argparse.Namespace) -> None:
         rp_dst = results_dir / f"{run_name}_rp.jsonl"
         if rp_src.exists() and not rp_dst.exists():
             import shutil
+
             shutil.copy(str(rp_src), str(rp_dst))
         nan_limit = str(cfg.get("eval", {}).get("nan_limit", 136))
-        eval_args = ap.parse_args([
-            "eval",
-            "--out-dir", str(out_dir),
-            "--run-name", f"{run_name}_rp",
-            "--judge", "gpt-4o-mini-2024-07-18",
-            "--eval-rpm", "8000",
-            "--eval-batch-size", "20",
-            "--concurrency", "50",
-            "--nan-limit", nan_limit,
-        ])
+        eval_args = ap.parse_args(
+            [
+                "eval",
+                "--out-dir",
+                str(out_dir),
+                "--run-name",
+                f"{run_name}_rp",
+                "--judge",
+                "gpt-4o-mini-2024-07-18",
+                "--eval-rpm",
+                "8000",
+                "--eval-batch-size",
+                "20",
+                "--concurrency",
+                "50",
+                "--nan-limit",
+                nan_limit,
+            ]
+        )
         try:
             cmd_bench_eval(eval_args)
         except Exception as _exc:
@@ -4747,6 +5448,7 @@ def cmd_init_config(args: argparse.Namespace) -> None:
     src = Path(__file__).parent.parent / "work" / "configs" / "base.toml"
     if src.exists():
         import shutil
+
         shutil.copy(str(src), str(dest))
         print(f"Written: {dest}")
     else:
@@ -4756,6 +5458,7 @@ def cmd_init_config(args: argparse.Namespace) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _make_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
@@ -4779,37 +5482,77 @@ def _make_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("index", help="Chunk + embed + store corpus via chonk")
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
     p.add_argument("--force", action="store_true", help="Delete existing index and reindex")
-    p.add_argument("--embed-content-only", action="store_true",
-                   help="Embed content only (no breadcrumb); stores to chonk_nobc.duckdb")
-    p.add_argument("--include-doc-name", action="store_true", dest="include_doc_name",
-                   help="Include document name in breadcrumbs ([doc > section]); stores to chunkymonkey_bc.duckdb")
+    p.add_argument(
+        "--embed-content-only",
+        action="store_true",
+        help="Embed content only (no breadcrumb); stores to chonk_nobc.duckdb",
+    )
+    p.add_argument(
+        "--include-doc-name",
+        action="store_true",
+        dest="include_doc_name",
+        help="Include document name in breadcrumbs ([doc > section]); stores to chunkymonkey_bc.duckdb",
+    )
     p.add_argument("--min-chunk", type=int, default=None)
     p.add_argument("--max-chunk", type=int, default=None)
-    p.add_argument("--with-ner", action="store_true",
-                   help="Run NER + cluster after indexing and persist to DB")
-    p.add_argument("--with-community", action="store_true", dest="with_community",
-                   help="Build community index after indexing and persist to DB")
-    p.add_argument("--with-svo", action="store_true", dest="with_svo",
-                   help="Extract SVO triples after indexing and persist to DB (requires --gen-model / --gen-provider)")
-    p.add_argument("--gen-model", default=GEN_MODEL, dest="gen_model",
-                   help=f"Generation model for --with-svo (default: {GEN_MODEL})")
-    p.add_argument("--gen-provider", default="openai", choices=["openai", "together", "anthropic"],
-                   dest="gen_provider",
-                   help="API provider for --with-svo (default: openai)")
-    p.add_argument("--db-name", default=None, dest="db_name",
-                   help="DB filename override for --with-community / --with-svo")
+    p.add_argument(
+        "--with-ner", action="store_true", help="Run NER + cluster after indexing and persist to DB"
+    )
+    p.add_argument(
+        "--with-community",
+        action="store_true",
+        dest="with_community",
+        help="Build community index after indexing and persist to DB",
+    )
+    p.add_argument(
+        "--with-svo",
+        action="store_true",
+        dest="with_svo",
+        help="Extract SVO triples after indexing and persist to DB (requires --gen-model / --gen-provider)",
+    )
+    p.add_argument(
+        "--gen-model",
+        default=GEN_MODEL,
+        dest="gen_model",
+        help=f"Generation model for --with-svo (default: {GEN_MODEL})",
+    )
+    p.add_argument(
+        "--gen-provider",
+        default="openai",
+        choices=["openai", "together", "anthropic"],
+        dest="gen_provider",
+        help="API provider for --with-svo (default: openai)",
+    )
+    p.add_argument(
+        "--db-name",
+        default=None,
+        dest="db_name",
+        help="DB filename override for --with-community / --with-svo",
+    )
     p.set_defaults(func=cmd_index)
 
     # build-ner
     p = sub.add_parser("build-ner", help="Run NER + persist chunk_entities to an existing index DB")
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
     p.add_argument("--db-name", required=True, help="DB filename inside {out_dir}/data/")
-    p.add_argument("--with-embeddings", action="store_true", dest="with_embeddings",
-                   help="Also embed entity strings and store in entity_embeddings table (required for --ner-x)")
-    p.add_argument("--with-schema-vocab", action="store_true", dest="with_schema_vocab",
-                   help="Augment spaCy NER with SchemaMatcher built from schema/API chunks in the index")
-    p.add_argument("--with-context-graph", action="store_true", dest="with_context_graph",
-                   help="Build context graph immediately after NER (cooccur + cluster signals)")
+    p.add_argument(
+        "--with-embeddings",
+        action="store_true",
+        dest="with_embeddings",
+        help="Also embed entity strings and store in entity_embeddings table (required for --ner-x)",
+    )
+    p.add_argument(
+        "--with-schema-vocab",
+        action="store_true",
+        dest="with_schema_vocab",
+        help="Augment spaCy NER with SchemaMatcher built from schema/API chunks in the index",
+    )
+    p.add_argument(
+        "--with-context-graph",
+        action="store_true",
+        dest="with_context_graph",
+        help="Build context graph immediately after NER (cooccur + cluster signals)",
+    )
     p.add_argument("--force", action="store_true", help="Rebuild even if tables already populated")
     p.set_defaults(func=cmd_build_ner)
 
@@ -4818,272 +5561,609 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
     p.add_argument("--force", action="store_true", help="Delete existing index and reindex")
     p.add_argument("--chunk-tokens", type=int, default=None)
-    p.add_argument("--from-store", metavar="DB", default=None,
-                   help="Build corpus from an existing Store DuckDB instead of corpus_info.json")
+    p.add_argument(
+        "--from-store",
+        metavar="DB",
+        default=None,
+        help="Build corpus from an existing Store DuckDB instead of corpus_info.json",
+    )
     p.set_defaults(func=cmd_index_vanilla)
 
     # run
     p = sub.add_parser("run", help="Retrieve and generate answers for all questions")
-    p.add_argument("--out-dir",     default="/tmp/grb", metavar="DIR")
-    p.add_argument("--limit",       type=int, default=None, metavar="N",
-                   help="Limit to first N questions (for testing)")
-    p.add_argument("--gen-model",     default=GEN_MODEL,
-                   help=f"Generation model (default: {GEN_MODEL})")
-    p.add_argument("--gen-provider",  default="openai", choices=["openai", "together", "anthropic"],
-                   help="API provider for generation: openai, together, or anthropic (default: openai)")
-    p.add_argument("--concurrency",   type=int, default=20,
-                   help="Parallel workers (default: 20)")
-    p.add_argument("--run-name",      default="contextual",
-                   help="Output file prefix (default: contextual)")
+    p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Limit to first N questions (for testing)",
+    )
+    p.add_argument(
+        "--gen-model", default=GEN_MODEL, help=f"Generation model (default: {GEN_MODEL})"
+    )
+    p.add_argument(
+        "--gen-provider",
+        default="openai",
+        choices=["openai", "together", "anthropic"],
+        help="API provider for generation: openai, together, or anthropic (default: openai)",
+    )
+    p.add_argument("--concurrency", type=int, default=20, help="Parallel workers (default: 20)")
+    p.add_argument(
+        "--run-name", default="contextual", help="Output file prefix (default: contextual)"
+    )
     # ── Base ──────────────────────────────────────────────────────────────────
     g_base = p.add_argument_group("base", "Core retrieval mode")
-    g_base.add_argument("--vanilla", action="store_true",
-                        help=f"Use vanilla RAG index ({VANILLA_CHUNK_TOKENS}-token chunks, k={VANILLA_K})")
-    g_base.add_argument("--rerank", action="store_true",
-                        help=f"Rerank top-{K_FETCH} candidates to top-{K}")
-    g_base.add_argument("--rerank-provider", default="local", choices=["local", "together", "cohere"],
-                        help=f"Reranker: local={RERANK_MODEL}, together={RERANK_MODEL_TOGETHER} (default: local)")
-    g_base.add_argument("--rerank-chunk", type=int, default=200, metavar="N",
-                        help="Outer loop batch size for reranking + checkpoint interval (default: 200)")
-    g_base.add_argument("--bm25", action="store_true", dest="bm25",
-                        help="Enable BM25 hybrid retrieval fused with vector search via RRF")
+    g_base.add_argument(
+        "--vanilla",
+        action="store_true",
+        help=f"Use vanilla RAG index ({VANILLA_CHUNK_TOKENS}-token chunks, k={VANILLA_K})",
+    )
+    g_base.add_argument(
+        "--rerank", action="store_true", help=f"Rerank top-{K_FETCH} candidates to top-{K}"
+    )
+    g_base.add_argument(
+        "--rerank-provider",
+        default="local",
+        choices=["local", "together", "cohere"],
+        help=f"Reranker: local={RERANK_MODEL}, together={RERANK_MODEL_TOGETHER} (default: local)",
+    )
+    g_base.add_argument(
+        "--rerank-chunk",
+        type=int,
+        default=200,
+        metavar="N",
+        help="Outer loop batch size for reranking + checkpoint interval (default: 200)",
+    )
+    g_base.add_argument(
+        "--bm25",
+        action="store_true",
+        dest="bm25",
+        help="Enable BM25 hybrid retrieval fused with vector search via RRF",
+    )
 
     # ── Expansion ─────────────────────────────────────────────────────────────
     g_exp = p.add_argument_group(
         "expansion",
-        "Grow the candidate pool beyond vector seed. Dependencies: --enhanced required for all expansion flags.")
-    g_exp.add_argument("--enhanced", action="store_true",
-                       help=f"Enable entity/structural/cluster expansion (SpacyMatcher/{SPACY_MODEL})")
-    g_exp.add_argument("--ner-x", action="store_true", dest="ner_x",
-                       help="Add entity embedding ANN expansion; requires --enhanced + build-ner --with-embeddings")
-    g_exp.add_argument("--cluster", action="store_true",
-                       help="Enable cluster-neighbor expansion (off by default); requires --enhanced")
-    g_exp.add_argument("--entity-ref-expansion", action="store_true", dest="entity_ref_expansion",
-                       help="Post-selection: if query entities absent from top-k, re-search and insert covering chunks")
-    g_exp.add_argument("--entity-ref-expansion-per-k", type=int, default=None, dest="entity_ref_expansion_per_k",
-                       help="Per-entity retrieval k for --entity-ref-expansion (default: k / n_missing)")
-    g_exp.add_argument("--entity-ref-expansion-min-sim", type=float, default=None, dest="entity_ref_expansion_min_sim",
-                       help="Min cosine sim for --entity-ref-expansion hits (default: no filter)")
-    g_exp.add_argument("--context-graph", action="store_true", dest="context_graph",
-                       help="Expand ref-expansion via context graph edges (requires build-context-graph first)")
-    g_exp.add_argument("--context-graph-min-weight", type=float, default=0.1, dest="context_graph_min_weight",
-                       help="Min edge weight for context graph expansion (default: 0.1)")
-    g_exp.add_argument("--context-graph-top-k", type=int, default=5, dest="context_graph_top_k",
-                       help="Max context graph edges to follow per missing entity (default: 5)")
-    g_exp.add_argument("--breadcrumb-embed", action="store_true",
-                       help="Use bc-in-embedding index (chunkymonkey_1100_2200.duckdb); improves seed quality for structured docs")
+        "Grow the candidate pool beyond vector seed. Dependencies: --enhanced required for all expansion flags.",
+    )
+    g_exp.add_argument(
+        "--enhanced",
+        action="store_true",
+        help=f"Enable entity/structural/cluster expansion (SpacyMatcher/{SPACY_MODEL})",
+    )
+    g_exp.add_argument(
+        "--ner-x",
+        action="store_true",
+        dest="ner_x",
+        help="Add entity embedding ANN expansion; requires --enhanced + build-ner --with-embeddings",
+    )
+    g_exp.add_argument(
+        "--cluster",
+        action="store_true",
+        help="Enable cluster-neighbor expansion (off by default); requires --enhanced",
+    )
+    g_exp.add_argument(
+        "--entity-ref-expansion",
+        action="store_true",
+        dest="entity_ref_expansion",
+        help="Post-selection: if query entities absent from top-k, re-search and insert covering chunks",
+    )
+    g_exp.add_argument(
+        "--entity-ref-expansion-per-k",
+        type=int,
+        default=None,
+        dest="entity_ref_expansion_per_k",
+        help="Per-entity retrieval k for --entity-ref-expansion (default: k / n_missing)",
+    )
+    g_exp.add_argument(
+        "--entity-ref-expansion-min-sim",
+        type=float,
+        default=None,
+        dest="entity_ref_expansion_min_sim",
+        help="Min cosine sim for --entity-ref-expansion hits (default: no filter)",
+    )
+    g_exp.add_argument(
+        "--context-graph",
+        action="store_true",
+        dest="context_graph",
+        help="Expand ref-expansion via context graph edges (requires build-context-graph first)",
+    )
+    g_exp.add_argument(
+        "--context-graph-min-weight",
+        type=float,
+        default=0.1,
+        dest="context_graph_min_weight",
+        help="Min edge weight for context graph expansion (default: 0.1)",
+    )
+    g_exp.add_argument(
+        "--context-graph-top-k",
+        type=int,
+        default=5,
+        dest="context_graph_top_k",
+        help="Max context graph edges to follow per missing entity (default: 5)",
+    )
+    g_exp.add_argument(
+        "--breadcrumb-embed",
+        action="store_true",
+        help="Use bc-in-embedding index (chunkymonkey_1100_2200.duckdb); improves seed quality for structured docs",
+    )
 
     # ── Pool Management ───────────────────────────────────────────────────────
     g_pool = p.add_argument_group(
         "pool_management",
-        "Control which expanded candidates survive to the final top-k. Meaningful only when --enhanced is set.")
-    g_pool.add_argument("--lane-entity-min-sim", type=float, default=None, dest="lane_entity_min_sim",
-                        help="Quality gate: drop entity-adjacent chunks with query-sim < threshold before pool merge (e.g. 0.45)")
-    g_pool.add_argument("--redundancy-threshold", type=float, default=None, dest="redundancy_threshold",
-                        help="Dedup: drop near-duplicate chunks from merged pool before top-k selection (e.g. 0.92); fires after lane filter")
-    g_pool.add_argument("--concentration-threshold", type=float, default=None, dest="concentration_threshold",
-                        help="Auto-trigger --entity-ref-expansion if ≥ this fraction of top-k is from one doc (e.g. 0.6)")
+        "Control which expanded candidates survive to the final top-k. Meaningful only when --enhanced is set.",
+    )
+    g_pool.add_argument(
+        "--lane-entity-min-sim",
+        type=float,
+        default=None,
+        dest="lane_entity_min_sim",
+        help="Quality gate: drop entity-adjacent chunks with query-sim < threshold before pool merge (e.g. 0.45)",
+    )
+    g_pool.add_argument(
+        "--redundancy-threshold",
+        type=float,
+        default=None,
+        dest="redundancy_threshold",
+        help="Dedup: drop near-duplicate chunks from merged pool before top-k selection (e.g. 0.92); fires after lane filter",
+    )
+    g_pool.add_argument(
+        "--concentration-threshold",
+        type=float,
+        default=None,
+        dest="concentration_threshold",
+        help="Auto-trigger --entity-ref-expansion if ≥ this fraction of top-k is from one doc (e.g. 0.6)",
+    )
 
     # ── Context Enrichment ────────────────────────────────────────────────────
     g_ctx = p.add_argument_group(
-        "context_enrichment",
-        "Modify what the generator sees. Independent of retrieval quality.")
-    g_ctx.add_argument("--community-context", action="store_true", dest="community_context",
-                       help="Inject community topic labels into generation prompt (requires build-community)")
-    g_ctx.add_argument("--community-min-coherence", type=float, default=0.0, dest="community_min_coherence",
-                       help="Suppress community labels with coherence < threshold (default: 0.0)")
-    g_ctx.add_argument("--query-complexity-threshold", type=int, default=2, dest="query_complexity_threshold",
-                       help="Skip community context for low-complexity queries (default: 2)")
-    g_ctx.add_argument("--breadcrumb-context", action="store_true",
-                       help="Prepend breadcrumb heading to each chunk in the generator context window")
-    g_ctx.add_argument("--breadcrumb-style", default="markdown",
-                       choices=["markdown", "literal", "symbol"], dest="breadcrumb_style",
-                       help="Breadcrumb format in context: markdown (## headings), literal (Section: X.), symbol ([X > Y])")
+        "context_enrichment", "Modify what the generator sees. Independent of retrieval quality."
+    )
+    g_ctx.add_argument(
+        "--community-context",
+        action="store_true",
+        dest="community_context",
+        help="Inject community topic labels into generation prompt (requires build-community)",
+    )
+    g_ctx.add_argument(
+        "--community-min-coherence",
+        type=float,
+        default=0.0,
+        dest="community_min_coherence",
+        help="Suppress community labels with coherence < threshold (default: 0.0)",
+    )
+    g_ctx.add_argument(
+        "--query-complexity-threshold",
+        type=int,
+        default=2,
+        dest="query_complexity_threshold",
+        help="Skip community context for low-complexity queries (default: 2)",
+    )
+    g_ctx.add_argument(
+        "--breadcrumb-context",
+        action="store_true",
+        help="Prepend breadcrumb heading to each chunk in the generator context window",
+    )
+    g_ctx.add_argument(
+        "--breadcrumb-style",
+        default="markdown",
+        choices=["markdown", "literal", "symbol"],
+        dest="breadcrumb_style",
+        help="Breadcrumb format in context: markdown (## headings), literal (Section: X.), symbol ([X > Y])",
+    )
 
     # ── Misc ──────────────────────────────────────────────────────────────────
     g_misc = p.add_argument_group("misc")
-    g_misc.add_argument("--entity-ref-retry", action="store_true", dest="entity_ref_retry",
-                        help="On refusal answer, retry with partial-answer hint (max 1 retry)")
-    g_misc.add_argument("--search-mode", default="vector_first",
-                        choices=["vector_first", "graph_first", "global", "map_reduce_global"],
-                        dest="search_mode",
-                        help="EnhancedSearch retrieval mode: vector_first (default), graph_first (entity graph traversal), global (community summaries only), map_reduce_global (MS-GraphRAG map-reduce over community summaries)")
-    g_misc.add_argument("--sr", action="store_true", dest="sr",
-                        help="Structured Response: generate with JSON schema (key_claims + evidence_used) once, no coverage check or gap-fill")
-    g_misc.add_argument("--srr", action="store_true", dest="srr",
-                        help="Structured Response Retry: generate with JSON schema, check entity coverage, gap-fill and retry (max 2 rounds)")
-    g_misc.add_argument("--srr-model", default=None, dest="srr_model",
-                        help="Model for SRR calls (default: same as --gen-model). Use a cheaper model e.g. gpt-4o-mini while --gen-model uses gpt-4o.")
-    g_misc.add_argument("--srr-provider", default=None, choices=["openai", "together", "anthropic"], dest="srr_provider",
-                        help="API provider for SRR calls (default: same as --gen-provider)")
-    g_misc.add_argument("--multi-step", action="store_true", dest="multi_step",
-                        help="Multi-step retrieval: decompose each question into sub-queries, retrieve for each, merge hits before generation")
-    g_misc.add_argument("--structured-gen", action="store_true", dest="structured_gen",
-                        help="Require ANSWER: <text> format from generator; retry once if non-compliant; strip marker before judge")
-    g_misc.add_argument("--top-k", type=int, default=None, dest="top_k", metavar="K",
-                        help=f"Override retrieval top-k (default: {K})")
-    g_misc.add_argument("--namespaces", nargs="*", default=None, dest="namespaces",
-                        help="Restrict retrieval to these namespaces (default: all namespaces)")
-    g_misc.add_argument("--domain-ids", nargs="*", default=None, dest="domain_ids",
-                        help="Restrict retrieval to these domain_ids (default: all domains)")
-    g_misc.add_argument("--auto-domain-filter", action="store_true", default=False, dest="auto_domain_filter",
-                        help="Enable per-query LLM domain routing (ADF); tags FANG corpus on first use")
-    g_misc.add_argument("--db-name", default=None, dest="db_name",
-                        help="Override DB filename inside {out_dir}/data/ (default: auto from --breadcrumb-embed)")
-    g_misc.add_argument("--question-ids", default=None, dest="question_ids", metavar="PATH",
-                        help="JSON file with list of question IDs to run (default: all)")
-    g_misc.add_argument("--config", default=None, metavar="TOML",
-                        help="Path to run config TOML file; CLI flags override")
+    g_misc.add_argument(
+        "--entity-ref-retry",
+        action="store_true",
+        dest="entity_ref_retry",
+        help="On refusal answer, retry with partial-answer hint (max 1 retry)",
+    )
+    g_misc.add_argument(
+        "--search-mode",
+        default="vector_first",
+        choices=["vector_first", "graph_first", "global", "map_reduce_global"],
+        dest="search_mode",
+        help="EnhancedSearch retrieval mode: vector_first (default), graph_first (entity graph traversal), global (community summaries only), map_reduce_global (MS-GraphRAG map-reduce over community summaries)",
+    )
+    g_misc.add_argument(
+        "--sr",
+        action="store_true",
+        dest="sr",
+        help="Structured Response: generate with JSON schema (key_claims + evidence_used) once, no coverage check or gap-fill",
+    )
+    g_misc.add_argument(
+        "--srr",
+        action="store_true",
+        dest="srr",
+        help="Structured Response Retry: generate with JSON schema, check entity coverage, gap-fill and retry (max 2 rounds)",
+    )
+    g_misc.add_argument(
+        "--srr-model",
+        default=None,
+        dest="srr_model",
+        help="Model for SRR calls (default: same as --gen-model). Use a cheaper model e.g. gpt-4o-mini while --gen-model uses gpt-4o.",
+    )
+    g_misc.add_argument(
+        "--srr-provider",
+        default=None,
+        choices=["openai", "together", "anthropic"],
+        dest="srr_provider",
+        help="API provider for SRR calls (default: same as --gen-provider)",
+    )
+    g_misc.add_argument(
+        "--multi-step",
+        action="store_true",
+        dest="multi_step",
+        help="Multi-step retrieval: decompose each question into sub-queries, retrieve for each, merge hits before generation",
+    )
+    g_misc.add_argument(
+        "--structured-gen",
+        action="store_true",
+        dest="structured_gen",
+        help="Require ANSWER: <text> format from generator; retry once if non-compliant; strip marker before judge",
+    )
+    g_misc.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        dest="top_k",
+        metavar="K",
+        help=f"Override retrieval top-k (default: {K})",
+    )
+    g_misc.add_argument(
+        "--namespaces",
+        nargs="*",
+        default=None,
+        dest="namespaces",
+        help="Restrict retrieval to these namespaces (default: all namespaces)",
+    )
+    g_misc.add_argument(
+        "--domain-ids",
+        nargs="*",
+        default=None,
+        dest="domain_ids",
+        help="Restrict retrieval to these domain_ids (default: all domains)",
+    )
+    g_misc.add_argument(
+        "--auto-domain-filter",
+        action="store_true",
+        default=False,
+        dest="auto_domain_filter",
+        help="Enable per-query LLM domain routing (ADF); tags FANG corpus on first use",
+    )
+    g_misc.add_argument(
+        "--db-name",
+        default=None,
+        dest="db_name",
+        help="Override DB filename inside {out_dir}/data/ (default: auto from --breadcrumb-embed)",
+    )
+    g_misc.add_argument(
+        "--question-ids",
+        default=None,
+        dest="question_ids",
+        metavar="PATH",
+        help="JSON file with list of question IDs to run (default: all)",
+    )
+    g_misc.add_argument(
+        "--config",
+        default=None,
+        metavar="TOML",
+        help="Path to run config TOML file; CLI flags override",
+    )
 
     p.set_defaults(func=cmd_run)
 
     # build-community
-    p = sub.add_parser("build-community", help="Build community index: heading vectors + weighted avg + Louvain detection")
+    p = sub.add_parser(
+        "build-community",
+        help="Build community index: heading vectors + weighted avg + Louvain detection",
+    )
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
     p.add_argument("--db-name", required=True, help="DB filename inside {out_dir}/data/")
-    p.add_argument("--alpha", type=float, default=0.2,
-                   help="Heading weight in weighted average (default: 0.2)")
-    p.add_argument("--sim-threshold", type=float, default=0.6, dest="sim_threshold",
-                   help="Min cosine sim for graph edges (default: 0.6)")
-    p.add_argument("--community-label-strategy", default="ner_embedding",
-                   choices=["term_freq", "ner_embedding"], dest="community_label_strategy",
-                   help="Community label method: ner_embedding (default) uses entity embeddings; term_freq uses word frequency")
-    p.add_argument("--gen-provider", default=None, dest="gen_provider",
-                   choices=["openai", "together", "anthropic"],
-                   help="LLM provider for community summary generation (omit to skip summaries)")
-    p.add_argument("--gen-model", default=GEN_MODEL, dest="gen_model",
-                   help=f"Model for community summary generation (default: {GEN_MODEL})")
+    p.add_argument(
+        "--alpha", type=float, default=0.2, help="Heading weight in weighted average (default: 0.2)"
+    )
+    p.add_argument(
+        "--sim-threshold",
+        type=float,
+        default=0.6,
+        dest="sim_threshold",
+        help="Min cosine sim for graph edges (default: 0.6)",
+    )
+    p.add_argument(
+        "--community-label-strategy",
+        default="ner_embedding",
+        choices=["term_freq", "ner_embedding"],
+        dest="community_label_strategy",
+        help="Community label method: ner_embedding (default) uses entity embeddings; term_freq uses word frequency",
+    )
+    p.add_argument(
+        "--gen-provider",
+        default=None,
+        dest="gen_provider",
+        choices=["openai", "together", "anthropic"],
+        help="LLM provider for community summary generation (omit to skip summaries)",
+    )
+    p.add_argument(
+        "--gen-model",
+        default=GEN_MODEL,
+        dest="gen_model",
+        help=f"Model for community summary generation (default: {GEN_MODEL})",
+    )
     p.add_argument("--force", action="store_true", help="Rebuild even if already populated")
     p.set_defaults(func=cmd_build_community)
 
     # build-svo
-    p = sub.add_parser("build-svo", help="Extract SVO triples from all chunks and persist to svo_triples table")
+    p = sub.add_parser(
+        "build-svo", help="Extract SVO triples from all chunks and persist to svo_triples table"
+    )
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
-    p.add_argument("--db-name", default=None, dest="db_name",
-                   help=f"DB filename inside {{out_dir}}/data/ (default: {DB_FILENAME})")
+    p.add_argument(
+        "--db-name",
+        default=None,
+        dest="db_name",
+        help=f"DB filename inside {{out_dir}}/data/ (default: {DB_FILENAME})",
+    )
     p.add_argument("--force", action="store_true", help="Rebuild even if already populated")
-    p.add_argument("--gen-model", default=GEN_MODEL, dest="gen_model",
-                   help=f"LLM model for triple extraction (default: {GEN_MODEL})")
-    p.add_argument("--gen-provider", default="openai", choices=["openai", "together", "anthropic"],
-                   dest="gen_provider",
-                   help="API provider for LLM (default: openai)")
-    p.add_argument("--concurrency", type=int, default=4,
-                   help="Parallel extraction workers (default: 4)")
-    p.add_argument("--max-chunks", type=int, default=None, dest="max_chunks",
-                   help="Limit to first N chunks (for testing)")
-    p.add_argument("--progress-out", default=None, dest="progress_out",
-                   metavar="PATH",
-                   help="Write NDJSON progress events to PATH ('-' for stdout). "
-                        "One JSON line per chunk: {done, total, chunk_id, triples, "
-                        "descriptions, aliases, rel_descriptions}. Suitable for "
-                        "tailing by a web service and forwarding as SSE.")
-    p.add_argument("--with-context-graph", action="store_true", dest="with_context_graph",
-                   help="Rebuild context graph after SVO extraction (adds svo_signal to all edges)")
+    p.add_argument(
+        "--gen-model",
+        default=GEN_MODEL,
+        dest="gen_model",
+        help=f"LLM model for triple extraction (default: {GEN_MODEL})",
+    )
+    p.add_argument(
+        "--gen-provider",
+        default="openai",
+        choices=["openai", "together", "anthropic"],
+        dest="gen_provider",
+        help="API provider for LLM (default: openai)",
+    )
+    p.add_argument(
+        "--concurrency", type=int, default=4, help="Parallel extraction workers (default: 4)"
+    )
+    p.add_argument(
+        "--max-chunks",
+        type=int,
+        default=None,
+        dest="max_chunks",
+        help="Limit to first N chunks (for testing)",
+    )
+    p.add_argument(
+        "--progress-out",
+        default=None,
+        dest="progress_out",
+        metavar="PATH",
+        help="Write NDJSON progress events to PATH ('-' for stdout). "
+        "One JSON line per chunk: {done, total, chunk_id, triples, "
+        "descriptions, aliases, rel_descriptions}. Suitable for "
+        "tailing by a web service and forwarding as SSE.",
+    )
+    p.add_argument(
+        "--with-context-graph",
+        action="store_true",
+        dest="with_context_graph",
+        help="Rebuild context graph after SVO extraction (adds svo_signal to all edges)",
+    )
     p.set_defaults(func=cmd_build_svo)
 
     # build-context-graph
-    p = sub.add_parser("build-context-graph", help="Build context graph edges from chunk_entities + svo_triples")
+    p = sub.add_parser(
+        "build-context-graph", help="Build context graph edges from chunk_entities + svo_triples"
+    )
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
-    p.add_argument("--db-name", default=None, dest="db_name",
-                   help=f"DB filename inside {{out_dir}}/data/ (default: {DB_FILENAME})")
-    p.add_argument("--namespace", default="global",
-                   help="Namespace to build graph for, or 'all' for every namespace (default: global)")
-    p.add_argument("--min-weight", type=float, default=0.1, dest="min_weight",
-                   help="Prune edges below this weight (default: 0.1)")
-    p.add_argument("--algorithm", default="agglomerative", choices=["agglomerative", "dbscan", "leiden"],
-                   help="Clustering algorithm for chunk clusters (default: agglomerative)")
-    p.add_argument("--min-chunks", type=int, default=10, dest="min_chunks",
-                   help="Minimum chunks before clustering runs (default: 10)")
+    p.add_argument(
+        "--db-name",
+        default=None,
+        dest="db_name",
+        help=f"DB filename inside {{out_dir}}/data/ (default: {DB_FILENAME})",
+    )
+    p.add_argument(
+        "--namespace",
+        default="global",
+        help="Namespace to build graph for, or 'all' for every namespace (default: global)",
+    )
+    p.add_argument(
+        "--min-weight",
+        type=float,
+        default=0.1,
+        dest="min_weight",
+        help="Prune edges below this weight (default: 0.1)",
+    )
+    p.add_argument(
+        "--algorithm",
+        default="agglomerative",
+        choices=["agglomerative", "dbscan", "leiden"],
+        help="Clustering algorithm for chunk clusters (default: agglomerative)",
+    )
+    p.add_argument(
+        "--min-chunks",
+        type=int,
+        default=10,
+        dest="min_chunks",
+        help="Minimum chunks before clustering runs (default: 10)",
+    )
     p.add_argument("--force", action="store_true", help="Rebuild even if cache is valid")
     p.set_defaults(func=cmd_build_context_graph)
 
     # use-endpoints — run benchmark against existing Together dedicated endpoints
-    p = sub.add_parser("use-endpoints", help="Run benchmark using existing Together dedicated endpoints")
-    p.add_argument("endpoint_ids", nargs="+", metavar="ENDPOINT_ID",
-                   help="One or more Together dedicated endpoint IDs")
-    p.add_argument("--out-dir",     default="/tmp/grb", metavar="DIR")
-    p.add_argument("--concurrency", type=int, default=20,
-                   help="Workers per endpoint (default: 20, total = N * 20)")
-    p.add_argument("--judge",       default="gpt-4o-mini")
-    p.add_argument("--run-name",    default="contextual",
-                   help="Output file prefix (default: contextual)")
-    p.add_argument("--rerank",      action="store_true",
-                   help=f"Rerank top-{K_FETCH} candidates to top-{K} with {RERANK_MODEL}")
-    p.add_argument("--enhanced",    action="store_true",
-                   help=f"Use NER+cluster EnhancedSearch ({SPACY_MODEL} + agglomerative clustering)")
+    p = sub.add_parser(
+        "use-endpoints", help="Run benchmark using existing Together dedicated endpoints"
+    )
+    p.add_argument(
+        "endpoint_ids",
+        nargs="+",
+        metavar="ENDPOINT_ID",
+        help="One or more Together dedicated endpoint IDs",
+    )
+    p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
+    p.add_argument(
+        "--concurrency",
+        type=int,
+        default=20,
+        help="Workers per endpoint (default: 20, total = N * 20)",
+    )
+    p.add_argument("--judge", default="gpt-4o-mini")
+    p.add_argument(
+        "--run-name", default="contextual", help="Output file prefix (default: contextual)"
+    )
+    p.add_argument(
+        "--rerank",
+        action="store_true",
+        help=f"Rerank top-{K_FETCH} candidates to top-{K} with {RERANK_MODEL}",
+    )
+    p.add_argument(
+        "--enhanced",
+        action="store_true",
+        help=f"Use NER+cluster EnhancedSearch ({SPACY_MODEL} + agglomerative clustering)",
+    )
     p.set_defaults(func=cmd_use_endpoints)
 
     # provision — create Together dedicated endpoint, run benchmark, stop endpoint
-    p = sub.add_parser("provision", help="Create Together dedicated endpoint, run benchmark, stop endpoint")
-    p.add_argument("--out-dir",     default="/tmp/grb", metavar="DIR")
-    p.add_argument("--model",       default="Qwen/Qwen2.5-14B-Instruct",
-                   help="Model to deploy (default: Qwen/Qwen2.5-14B-Instruct)")
-    p.add_argument("--hardware",       default="2x_nvidia_h100_80gb_sxm",
-                   help="Together hardware tier (default: 2x_nvidia_h100_80gb_sxm)")
-    p.add_argument("--num-endpoints",  type=int, default=1,
-                   help="Number of parallel dedicated endpoints (default: 1)")
-    p.add_argument("--concurrency",    type=int, default=20,
-                   help="Workers per endpoint (default: 20, total = N * 20)")
+    p = sub.add_parser(
+        "provision", help="Create Together dedicated endpoint, run benchmark, stop endpoint"
+    )
+    p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
+    p.add_argument(
+        "--model",
+        default="Qwen/Qwen2.5-14B-Instruct",
+        help="Model to deploy (default: Qwen/Qwen2.5-14B-Instruct)",
+    )
+    p.add_argument(
+        "--hardware",
+        default="2x_nvidia_h100_80gb_sxm",
+        help="Together hardware tier (default: 2x_nvidia_h100_80gb_sxm)",
+    )
+    p.add_argument(
+        "--num-endpoints",
+        type=int,
+        default=1,
+        help="Number of parallel dedicated endpoints (default: 1)",
+    )
+    p.add_argument(
+        "--concurrency",
+        type=int,
+        default=20,
+        help="Workers per endpoint (default: 20, total = N * 20)",
+    )
     p.set_defaults(func=cmd_provision)
 
     # eval — score a run with benchmark's native answer_correctness metric
     p = sub.add_parser("eval", help="Score a run with benchmark's native answer_correctness metric")
-    p.add_argument("--out-dir",     default="/tmp/grb", metavar="DIR")
-    p.add_argument("--run-name",    default="contextual",
-                   help="Results file prefix to evaluate (default: contextual)")
-    p.add_argument("--judge",          default="gpt-4o-mini",
-                   help="Judge model (default: gpt-4o-mini)")
-    p.add_argument("--judge-provider", default="openai", choices=["openai", "together"],
-                   help="API provider for judge (default: openai)")
-    p.add_argument("--limit",          type=int, default=None, metavar="N")
-    p.add_argument("--question-ids",   default=None, metavar="PATH",
-                   help="JSON file with list of question IDs to evaluate")
-    p.add_argument("--concurrency",    type=int, default=5,
-                   help="Parallel workers (default: 5)")
-    p.add_argument("--eval-rpm",       type=int, default=None, dest="eval_rpm",
-                   help="Max judge API requests per minute (token-bucket throttle, default: no limit)")
-    p.add_argument("--eval-batch-size", type=int, default=10, dest="eval_batch_size",
-                   help="Items per async batch (default: 10)")
-    p.add_argument("--nan-limit",      type=int, default=None, dest="nan_limit",
-                   help="Stop retrying NaN items once total finalized-NaN count is ≤ this threshold (default: always retry)")
-    p.add_argument("--early-stop-target", type=float, default=None, dest="early_stop_target",
-                   help="Abort eval (exit 2) when upper 95%% CI of answer_correctness falls below this score")
-    p.add_argument("--early-stop-min-n",  type=int,   default=500,  dest="early_stop_min_n",
-                   help="Min evaluated questions before early-stop check fires (default: 500)")
+    p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
+    p.add_argument(
+        "--run-name",
+        default="contextual",
+        help="Results file prefix to evaluate (default: contextual)",
+    )
+    p.add_argument("--judge", default="gpt-4o-mini", help="Judge model (default: gpt-4o-mini)")
+    p.add_argument(
+        "--judge-provider",
+        default="openai",
+        choices=["openai", "together"],
+        help="API provider for judge (default: openai)",
+    )
+    p.add_argument("--limit", type=int, default=None, metavar="N")
+    p.add_argument(
+        "--question-ids",
+        default=None,
+        metavar="PATH",
+        help="JSON file with list of question IDs to evaluate",
+    )
+    p.add_argument("--concurrency", type=int, default=5, help="Parallel workers (default: 5)")
+    p.add_argument(
+        "--eval-rpm",
+        type=int,
+        default=None,
+        dest="eval_rpm",
+        help="Max judge API requests per minute (token-bucket throttle, default: no limit)",
+    )
+    p.add_argument(
+        "--eval-batch-size",
+        type=int,
+        default=10,
+        dest="eval_batch_size",
+        help="Items per async batch (default: 10)",
+    )
+    p.add_argument(
+        "--nan-limit",
+        type=int,
+        default=None,
+        dest="nan_limit",
+        help="Stop retrying NaN items once total finalized-NaN count is ≤ this threshold (default: always retry)",
+    )
+    p.add_argument(
+        "--early-stop-target",
+        type=float,
+        default=None,
+        dest="early_stop_target",
+        help="Abort eval (exit 2) when upper 95%% CI of answer_correctness falls below this score",
+    )
+    p.add_argument(
+        "--early-stop-min-n",
+        type=int,
+        default=500,
+        dest="early_stop_min_n",
+        help="Min evaluated questions before early-stop check fires (default: 500)",
+    )
     p.set_defaults(func=cmd_bench_eval)
 
     # score — print All score for a completed run (for shell script use)
-    p = sub.add_parser("score", help="Print All score (mean of Med+Nov answer_correctness) for a run")
-    p.add_argument("--out-dir",  default="/tmp/grb", metavar="DIR")
+    p = sub.add_parser(
+        "score", help="Print All score (mean of Med+Nov answer_correctness) for a run"
+    )
+    p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
     p.add_argument("--run-name", required=True, help="Run name to score")
     p.set_defaults(func=cmd_score)
 
     # backfill-db — reconstruct DuckDB from jsonl + eval checkpoint
-    p = sub.add_parser("backfill-db", help="Reconstruct run DuckDB from results jsonl + eval checkpoint jsonl")
-    p.add_argument("--out-dir",  default="/tmp/grb", metavar="DIR")
+    p = sub.add_parser(
+        "backfill-db", help="Reconstruct run DuckDB from results jsonl + eval checkpoint jsonl"
+    )
+    p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
     p.add_argument("--run-name", required=True, help="Run name to backfill")
     p.set_defaults(func=cmd_backfill_db)
 
-    p = sub.add_parser("prep-nan-reeval",
-                       help="Prepare checkpoint keeping only non-NaN results so eval re-runs NaN questions only")
-    p.add_argument("--out-dir",  default="/tmp/grb", metavar="DIR")
+    p = sub.add_parser(
+        "prep-nan-reeval",
+        help="Prepare checkpoint keeping only non-NaN results so eval re-runs NaN questions only",
+    )
+    p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
     p.add_argument("--run-name", required=True)
     p.set_defaults(func=cmd_prep_nan_reeval)
 
     # make-order — generate stratified question order for full-corpus runs
-    p = sub.add_parser("make-order", help="Generate stratified question order file for full-corpus runs")
+    p = sub.add_parser(
+        "make-order", help="Generate stratified question order file for full-corpus runs"
+    )
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
-    p.add_argument("--output", default=None, metavar="PATH",
-                   help="Output JSON path (default: {out_dir}/data/full_corpus_stratified_order.json)")
+    p.add_argument(
+        "--output",
+        default=None,
+        metavar="PATH",
+        help="Output JSON path (default: {out_dir}/data/full_corpus_stratified_order.json)",
+    )
     p.set_defaults(func=cmd_make_order)
 
     # prime-cache — pre-compute and persist all question + entity embeddings
-    p = sub.add_parser("prime-cache", help="Pre-compute question and entity embedding caches (run before 'run')")
+    p = sub.add_parser(
+        "prime-cache", help="Pre-compute question and entity embedding caches (run before 'run')"
+    )
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
-    p.add_argument("--embed-model", default=None, metavar="MODEL",
-                   help=f"Embedding model (default: {EMBED_MODEL})")
-    p.add_argument("--spacy-model", default=None, metavar="MODEL",
-                   help=f"spaCy NER model (default: {SPACY_MODEL})")
+    p.add_argument(
+        "--embed-model",
+        default=None,
+        metavar="MODEL",
+        help=f"Embedding model (default: {EMBED_MODEL})",
+    )
+    p.add_argument(
+        "--spacy-model",
+        default=None,
+        metavar="MODEL",
+        help=f"spaCy NER model (default: {SPACY_MODEL})",
+    )
     p.set_defaults(func=cmd_prime_cache)
 
     # report — combined matrix of all eval runs + leaderboard
@@ -5093,7 +6173,9 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument("--exclude", default=None, metavar="STR")
     p.set_defaults(func=cmd_nan_bias_report)
 
-    p = sub.add_parser("corrected-report", help="Bias-corrected scores via cross-run NaN imputation")
+    p = sub.add_parser(
+        "corrected-report", help="Bias-corrected scores via cross-run NaN imputation"
+    )
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
     p.add_argument("--filter", default=None, metavar="STR")
     p.add_argument("--exclude", default=None, metavar="STR")
@@ -5101,23 +6183,39 @@ def _make_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("report", help="Combined matrix: our eval runs + leaderboard")
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
-    p.add_argument("--filter", default=None, metavar="STR",
-                   help="Only show runs whose name contains STR (e.g. 'grid' or 'full')")
-    p.add_argument("--exclude", default=None, metavar="STR",
-                   help="Exclude runs whose name contains STR (e.g. 'full' to show only grid runs)")
+    p.add_argument(
+        "--filter",
+        default=None,
+        metavar="STR",
+        help="Only show runs whose name contains STR (e.g. 'grid' or 'full')",
+    )
+    p.add_argument(
+        "--exclude",
+        default=None,
+        metavar="STR",
+        help="Exclude runs whose name contains STR (e.g. 'full' to show only grid runs)",
+    )
     p.set_defaults(func=cmd_bench_report)
 
     # run-all — run every TOML config in a directory, skipping completed runs
     p = sub.add_parser("run-all", help="Run all TOML configs in a directory, then eval each")
-    p.add_argument("--config-dir", required=True, metavar="DIR",
-                   help="Directory containing *.toml run configs")
+    p.add_argument(
+        "--config-dir", required=True, metavar="DIR", help="Directory containing *.toml run configs"
+    )
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
-    p.add_argument("--question-ids", default=None, dest="question_ids", metavar="PATH",
-                   help="JSON file with list of question IDs to run (default: all)")
+    p.add_argument(
+        "--question-ids",
+        default=None,
+        dest="question_ids",
+        metavar="PATH",
+        help="JSON file with list of question IDs to run (default: all)",
+    )
     p.set_defaults(func=cmd_run_all)
 
     # init-config — write base.toml to {out_dir}/configs/
-    p = sub.add_parser("init-config", help="Write base.toml with all defaults to {out_dir}/configs/")
+    p = sub.add_parser(
+        "init-config", help="Write base.toml with all defaults to {out_dir}/configs/"
+    )
     p.add_argument("--out-dir", default="/tmp/grb", metavar="DIR")
     p.add_argument("--force", action="store_true", help="Overwrite if exists")
     p.set_defaults(func=cmd_init_config)
@@ -5126,7 +6224,7 @@ def _make_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    ap   = _make_parser()
+    ap = _make_parser()
     args = ap.parse_args()
     args.func(args)
 
