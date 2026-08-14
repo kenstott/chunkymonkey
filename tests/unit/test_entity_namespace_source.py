@@ -629,3 +629,65 @@ class TestGlossaryAndSchemaTermNamespaces:
         assert ("term:wire_transfer", "wire transfer", "ops") in tags
         assert _schema is not None
         assert _schema.match("a wire transfer was sent") != []
+
+
+class TestVocabEntryValidation:
+    """A dropped or mislabelled vocab entry yields a plausible-looking empty index."""
+
+    def _build(self, entry):
+        return _build_vocab_matchers([], use_schema_vocab=False, vocab_entities=[entry])
+
+    def test_unknown_type_raises(self):
+        with pytest.raises(ValueError, match="unknown type 'lookup'"):
+            self._build({"type": "lookup", "entity_type": "customer", "names": ["Acme"]})
+
+    def test_missing_type_raises(self):
+        with pytest.raises(ValueError, match="unknown type None"):
+            self._build({"entity_type": "customer", "names": ["Acme"]})
+
+    def test_error_names_the_offending_entry(self):
+        with pytest.raises(ValueError, match=r"vocab_entities\[1\]"):
+            _build_vocab_matchers(
+                [],
+                use_schema_vocab=False,
+                vocab_entities=[
+                    {"type": "static", "entity_type": "customer", "names": ["Acme"]},
+                    {"type": "typo", "entity_type": "customer", "names": ["Globex"]},
+                ],
+            )
+
+    def test_missing_entity_type_raises_rather_than_defaulting(self):
+        """entity_type is part of the id, so a default is a different entity."""
+        with pytest.raises(ValueError, match="entity_type is required"):
+            self._build({"type": "static", "names": ["Acme"]})
+
+    def test_glossary_rejects_an_entity_type_it_would_ignore(self):
+        with pytest.raises(ValueError, match="glossary entries always carry"):
+            self._build({"type": "glossary", "entity_type": "customer", "names": ["Acme"]})
+
+    def test_missing_names_raises(self):
+        with pytest.raises(ValueError, match="non-empty 'names'"):
+            self._build({"type": "static", "entity_type": "customer"})
+
+    def test_empty_names_raises(self):
+        with pytest.raises(ValueError, match="non-empty 'names'"):
+            self._build({"type": "static", "entity_type": "customer", "names": []})
+
+    def test_db_query_requires_connection_and_sql(self):
+        with pytest.raises(ValueError, match="requires a non-empty 'sql'"):
+            self._build({"type": "db_query", "entity_type": "c", "connection": "duckdb://"})
+        with pytest.raises(ValueError, match="requires a non-empty 'connection'"):
+            self._build({"type": "db_query", "entity_type": "c", "sql": "SELECT 1"})
+
+    def test_valid_entries_still_build(self):
+        _schema, data, tags = _build_vocab_matchers(
+            [],
+            use_schema_vocab=False,
+            vocab_entities=[
+                {"type": "static", "entity_type": "customer", "names": ["Acme Corp"]},
+                {"type": "glossary", "names": ["Wire Transfer"], "namespace": "ops"},
+            ],
+        )
+        assert data is not None
+        assert ("customer:acme_corp", "acme corp", "global") in tags
+        assert ("term:wire_transfer", "wire transfer", "ops") in tags

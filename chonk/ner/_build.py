@@ -32,6 +32,10 @@ _NUMERIC_TYPES = {
     SpacyLabel.PERCENT,
     SpacyLabel.QUANTITY,
 }
+# Recognised vocab_entities entry types. An entry naming anything else is a
+# configuration error, not something to skip.
+_VOCAB_ENTRY_TYPES = frozenset({"static", "glossary", "db_query"})
+
 _ID_SUFFIXES = (
     "_identifier",
     "_reference",
@@ -154,18 +158,69 @@ def _build_vocab_matchers(
     builder = SchemaVocabBuilder()
     if use_schema_vocab:
         builder.add_chunks(all_chunks)
-    for entry in vocab_entities or []:
-        etype = entry.get("entity_type", "term")
-        ns = entry.get("namespace")
-        if entry.get("type") == "static":
-            builder.add_entities(entry.get("names", []), entity_type=etype, namespace=ns)
-        elif entry.get("type") == "glossary":
-            builder.add_business_terms(entry.get("names", []), namespace=ns)
-        elif entry.get("type") == "db_query":
-            builder.add_from_db(entry["connection"], {etype: entry["sql"]}, namespace=ns)
+    for index, entry in enumerate(vocab_entities or []):
+        _add_vocab_entry(builder, entry, index)
     schema_matcher = builder.build()
     data_matcher = builder.build_data_matcher() if builder.data_term_count() > 0 else None
     return schema_matcher, data_matcher, builder.namespaced_entities()
+
+
+def _add_vocab_entry(builder: Any, entry: dict[str, Any], index: int) -> None:  # noqa: ANN401
+    """Apply one ``vocab_entities`` entry to *builder*.
+
+    Every problem here raises. A dropped or mislabelled entry produces an index
+    that looks successful while the intended vocabulary is absent — build_ner
+    still reports a chunk count, and spaCy's generic guess stands in for the
+    entity the caller declared. Since entity_type is part of the entity id, a
+    defaulted type is a different entity, not a cosmetic difference.
+
+    Raises:
+        ValueError: unknown ``type``, missing ``entity_type`` where it is
+            identity-bearing, missing ``names``, or ``entity_type`` set on a
+            glossary entry where it would be ignored.
+    """
+    where = f"vocab_entities[{index}]"
+    etype = entry.get("entity_type")
+    ns = entry.get("namespace")
+    kind = entry.get("type")
+
+    if kind not in _VOCAB_ENTRY_TYPES:
+        raise ValueError(
+            f"{where}: unknown type {kind!r}. Expected one of "
+            f"{', '.join(sorted(_VOCAB_ENTRY_TYPES))}."
+        )
+
+    if kind == "glossary":
+        if etype is not None:
+            raise ValueError(
+                f"{where}: glossary entries always carry entity_type 'term'; "
+                f"remove entity_type={etype!r} rather than have it silently ignored."
+            )
+        builder.add_business_terms(_require_names(entry, where), namespace=ns)
+        return
+
+    if etype is None:
+        raise ValueError(
+            f"{where}: entity_type is required for type={kind!r}. It is part of the "
+            f"entity id, so defaulting it would create a different entity."
+        )
+
+    if kind == "static":
+        builder.add_entities(_require_names(entry, where), entity_type=etype, namespace=ns)
+        return
+
+    for key in ("connection", "sql"):
+        if not entry.get(key):
+            raise ValueError(f"{where}: type='db_query' requires a non-empty {key!r}.")
+    builder.add_from_db(entry["connection"], {etype: entry["sql"]}, namespace=ns)
+
+
+def _require_names(entry: dict[str, Any], where: str) -> list[str]:
+    """Return the entry's ``names``, refusing an absent or empty list."""
+    names = entry.get("names")
+    if not names:
+        raise ValueError(f"{where}: type={entry.get('type')!r} requires a non-empty 'names' list.")
+    return list(names)
 
 
 def _collect_chunks_to_process(
