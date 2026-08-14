@@ -269,3 +269,48 @@ class TestMergeIntegration:
         org_results = [m for m in merged if m.entity_type == "ORG"]
         assert len(schema_results) == 1
         assert len(org_results) == 0
+
+
+# ---------------------------------------------------------------------------
+# A surface shared across two of the three term lists
+# ---------------------------------------------------------------------------
+
+
+class TestSurfaceSharedAcrossTermLists:
+    """Registering an entity that _lookup cannot reach would make it unmatchable."""
+
+    def test_schema_and_business_term_both_match(self):
+        m = SchemaMatcher(schema_terms=["customer"], business_terms=["customer"])
+        results = m.match("the customer table")
+        assert sorted(r.entity_id for r in results) == ["schema:customer", "term:customer"]
+        # Same mention, same span — evidence for both, not a split.
+        assert {tuple(r.spans) for r in results} == {((4, 12),)}
+
+    def test_every_registered_entity_is_reachable(self):
+        m = SchemaMatcher(
+            schema_terms=["customer"], api_terms=["customer"], business_terms=["customer"]
+        )
+        reachable = {eid for mappings in m._lookup.values() for eid, _d, _t in mappings}
+        assert reachable == set(m._entities)
+
+    def test_all_three_types_match_one_mention(self):
+        m = SchemaMatcher(
+            schema_terms=["customer"], api_terms=["customer"], business_terms=["customer"]
+        )
+        results = m.match("a customer record")
+        assert sorted(r.entity_type for r in results) == ["api", "schema", "term"]
+
+    def test_distinct_surfaces_are_unaffected(self):
+        m = SchemaMatcher(schema_terms=["customer"], business_terms=["invoice"])
+        results = m.match("the customer and the invoice")
+        assert sorted(r.entity_id for r in results) == ["schema:customer", "term:invoice"]
+
+    def test_repeated_registration_of_one_term_is_deduped(self):
+        m = SchemaMatcher(schema_terms=["customer", "customer"])
+        assert [len(v) for v in m._lookup.values()] == [1] * len(m._lookup)
+        assert len(m.match("the customer table")) == 1
+
+    def test_frequency_counts_each_occurrence_once_per_entity(self):
+        m = SchemaMatcher(schema_terms=["customer"], business_terms=["customer"])
+        results = m.match("customer here and customer there")
+        assert {r.frequency for r in results} == {2}
