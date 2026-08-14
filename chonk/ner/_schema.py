@@ -111,8 +111,12 @@ class SchemaMatcher:
         normalize_separators: bool = True,
     ) -> None:
         self._normalize = normalize_separators
-        # variant_lowercase -> (entity_id, display_name, entity_type)
-        self._lookup: dict[str, tuple[str, str, str]] = {}
+        # variant_lowercase -> [(entity_id, display_name, entity_type), ...].
+        # One surface can name entities of different types — "customer" as both a
+        # table (schema:customer) and a glossary term (term:customer). Every
+        # mapping is kept: registering an entity in _entities that _lookup could
+        # never reach would make it silently unmatchable.
+        self._lookup: dict[str, list[tuple[str, str, str]]] = {}
         # entity_id -> (canonical_name, display_name, entity_type)
         self._entities: dict[str, tuple[str, str, str]] = {}
 
@@ -129,9 +133,10 @@ class SchemaMatcher:
                     key = normalize_surface(variant) if self._normalize else variant
                     if not key:
                         continue
-                    # First registration wins on collision
-                    if key not in self._lookup:
-                        self._lookup[key] = (eid, term, etype)
+                    mapping = (eid, term, etype)
+                    bucket = self._lookup.setdefault(key, [])
+                    if mapping not in bucket:
+                        bucket.append(mapping)
 
     # ------------------------------------------------------------------
     # Public API
@@ -158,7 +163,7 @@ class SchemaMatcher:
             index_map = list(range(len(check)))
         found: dict[str, list[tuple[int, int]]] = {}  # entity_id -> spans
 
-        for variant, (eid, _display, _etype) in self._lookup.items():
+        for variant, mappings in self._lookup.items():
             start = 0
             while True:
                 pos = check.find(variant, start)
@@ -168,9 +173,9 @@ class SchemaMatcher:
                 after_pos = pos + len(variant)
                 after_ok = after_pos >= len(check) or not check[after_pos].isalnum()
                 if before_ok and after_ok:
-                    if eid not in found:
-                        found[eid] = []
-                    found[eid].append((index_map[pos], index_map[after_pos - 1] + 1))
+                    span = (index_map[pos], index_map[after_pos - 1] + 1)
+                    for eid, _display, _etype in mappings:
+                        found.setdefault(eid, []).append(span)
                 start = pos + 1
 
         results = []
