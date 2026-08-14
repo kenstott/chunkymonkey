@@ -44,6 +44,49 @@ class NamespaceEvidence:
     share: float
 
 
+@dataclass(frozen=True)
+class EntityLookup:
+    """Why an entity lookup returned what it did.
+
+    An empty ``ids`` has two very different causes — the name is not in the
+    index, or it is and the caller's filter excluded it. This separates them.
+
+    Attributes:
+        ids: What :meth:`Store.resolve_entity_ids` returns for the same query.
+        name_exists: The name is present under *some* entity type. With an empty
+            ``ids`` this means the filter excluded it, not that the name is unknown.
+        available_types: Every entity type the name exists under, ignoring the
+            requested filter. Sorted.
+        available_namespaces: Every namespace the name has evidence in, ignoring
+            the requested filter. With an empty ``ids`` and a namespace filter
+            set, this is what the caller should have asked for. Sorted.
+        near_matches: Entity ids whose name slug contains, or is contained by,
+            the queried one — typo and partial-name help. Excludes ``ids``.
+            Capped at ``NEAR_MATCH_LIMIT``; ``near_matches_truncated`` says so.
+        near_matches_truncated: More near matches existed than were returned.
+    """
+
+    ids: list[str]
+    name_exists: bool
+    available_types: list[str]
+    available_namespaces: list[str]
+    near_matches: list[str]
+    near_matches_truncated: bool
+
+
+NEAR_MATCH_LIMIT = 10
+
+
+def _like_escape(value: str) -> str:
+    """Escape LIKE wildcards in *value*.
+
+    Name slugs collapse every non-alphanumeric character to ``_``, which is a
+    single-character wildcard in LIKE — without escaping, ``acme_corp`` also
+    matches ``acmeXcorp``. Used with ``ESCAPE '\\'``.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class Store:
     """Composed storage facade backed by DuckDB (default) or PostgreSQL.
 
@@ -1109,7 +1152,12 @@ class Store:
         ).fetchall()
         return [r[0] for r in rows]
 
-    def resolve_entity_ids(self, name: str, entity_type: str | None = None) -> list[str]:
+    def resolve_entity_ids(
+        self,
+        name: str,
+        entity_type: str | None = None,
+        namespaces: list[str] | None = None,
+    ) -> list[str]:
         """Resolve an unqualified entity name to every matching entity id.
 
         Callers should not have to know the type prefix. ``"mercury"`` returns
@@ -1120,25 +1168,126 @@ class Store:
 
         Matching is on the name slug, so ``"Acme Corp"``, ``"acme corp"``, and
         ``"acme_corp"`` are the same query.
+
+        Args:
+            name: Entity name, qualified or not.
+            entity_type: Restrict to this type.
+            namespaces: Restrict to entities with evidence in these namespaces —
+                that is, associated with a chunk there, the same notion
+                :meth:`get_entity_namespace_evidence` reports. ``None`` applies no
+                restriction; ``[]`` matches nothing, mirroring ``search``.
+
+        Returns:
+            Matching entity ids, sorted. Empty when nothing matched — use
+            :meth:`explain_entity_lookup` to find out why.
         """
         from ..ner._vocabulary import _auto_id, split_typed_id
+
+        if namespaces is not None and not namespaces:
+            return []
 
         conn = self.vector._conn
         given_type, slug = split_typed_id(name)
         if given_type:
             # Already qualified — confirm it exists rather than guessing.
             rows = conn.execute("SELECT id FROM entities WHERE id = ?", [name]).fetchall()
-            return [r[0] for r in rows]
+            ids = [r[0] for r in rows]
+        else:
+            slug = _auto_id(slug)
+            rows = conn.execute(
+                "SELECT id FROM entities WHERE id LIKE ? ESCAPE '\\' ORDER BY id",
+                [f"%:{_like_escape(slug)}"],
+            ).fetchall()
+            ids = [r[0] for r in rows]
 
-        slug = _auto_id(slug)
-        rows = conn.execute(
-            "SELECT id FROM entities WHERE id LIKE ? ORDER BY id", [f"%:{slug}"]
-        ).fetchall()
-        ids = [r[0] for r in rows]
         if entity_type is not None:
             prefix = f"{_auto_id(entity_type)}:"
             ids = [i for i in ids if i.startswith(prefix)]
+        if namespaces is not None and ids:
+            with_evidence = self._entities_with_evidence_in(ids, namespaces)
+            ids = [i for i in ids if i in with_evidence]
         return ids
+
+    def _entities_with_evidence_in(self, entity_ids: list[str], namespaces: list[str]) -> set[str]:
+        """Return the subset of *entity_ids* associated with a chunk in *namespaces*."""
+        if not entity_ids or not namespaces:
+            return set()
+        id_ph = ", ".join("?" * len(entity_ids))
+        ns_ph = ", ".join("?" * len(namespaces))
+        rows = self.vector._conn.execute(
+            f"SELECT DISTINCT entity_id FROM chunk_entities "  # noqa: S608
+            f"WHERE entity_id IN ({id_ph}) AND COALESCE(namespace, ?) IN ({ns_ph})",
+            [*entity_ids, GLOBAL_NAMESPACE, *namespaces],
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def explain_entity_lookup(
+        self,
+        name: str,
+        entity_type: str | None = None,
+        namespaces: list[str] | None = None,
+    ) -> EntityLookup:
+        """Explain what :meth:`resolve_entity_ids` found, and what it did not.
+
+        A miss is a normal outcome, so neither method raises. This one answers
+        the question an empty list cannot: whether the name is absent from the
+        index, or present under a type the caller did not ask for.
+
+        ``resolve_entity_ids("Mercury", entity_type="customer")`` returning ``[]``
+        while ``element:mercury`` exists is a caller mistake with an obvious fix;
+        the same empty list for an unknown name is not. ``name_exists``,
+        ``available_types``, and ``available_namespaces`` separate them — the last
+        one covering the same mistake made with a namespace filter.
+
+        Takes the same filters as :meth:`resolve_entity_ids` so the two answer the
+        same question; the reported alternatives always ignore those filters.
+        """
+        from ..ner._vocabulary import _auto_id, split_typed_id
+
+        conn = self.vector._conn
+        ids = self.resolve_entity_ids(name, entity_type=entity_type, namespaces=namespaces)
+
+        _given_type, raw_slug = split_typed_id(name)
+        slug = _auto_id(raw_slug)
+
+        escaped = _like_escape(slug)
+        all_typed = [
+            r[0]
+            for r in conn.execute(
+                "SELECT id FROM entities WHERE id LIKE ? ESCAPE '\\' ORDER BY id",
+                [f"%:{escaped}"],
+            ).fetchall()
+        ]
+        available_types = sorted({split_typed_id(i)[0] for i in all_typed})
+        available_namespaces: list[str] = []
+        if all_typed:
+            id_ph = ", ".join("?" * len(all_typed))
+            available_namespaces = sorted(
+                r[0]
+                for r in conn.execute(
+                    f"SELECT DISTINCT COALESCE(namespace, ?) FROM chunk_entities "  # noqa: S608
+                    f"WHERE entity_id IN ({id_ph})",
+                    [GLOBAL_NAMESPACE, *all_typed],
+                ).fetchall()
+            )
+
+        exact = set(all_typed) | set(ids)
+        near = [
+            r[0]
+            for r in conn.execute(
+                "SELECT id FROM entities WHERE id LIKE ? ESCAPE '\\' ORDER BY id",
+                [f"%{escaped}%"],
+            ).fetchall()
+            if r[0] not in exact
+        ]
+        return EntityLookup(
+            ids=ids,
+            name_exists=bool(all_typed),
+            available_types=available_types,
+            available_namespaces=available_namespaces,
+            near_matches=near[:NEAR_MATCH_LIMIT],
+            near_matches_truncated=len(near) > NEAR_MATCH_LIMIT,
+        )
 
     def get_entity_namespace_evidence(self, entity_id: str) -> list[NamespaceEvidence]:
         """Return the namespaces whose documents actually mention *entity_id*.
