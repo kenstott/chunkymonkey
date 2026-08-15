@@ -15,6 +15,7 @@ Public symbols (``run_worker``, ``run_coordinator``) are re-exported from
 from __future__ import annotations
 
 import hashlib
+import threading
 from typing import TYPE_CHECKING, Any
 
 from .loader import DocumentLoader
@@ -94,12 +95,13 @@ def run_worker(
     run_ner: bool = False,
     spacy_model: str = "en_core_web_sm",
     idle_sleep: float = 2.0,
+    stop_event: threading.Event | None = None,
 ) -> None:
     """Pull items from ``ingest_queue`` and process them.
 
-    Runs until interrupted. Workers check the ``control`` table's
-    ``workers_paused`` flag before each item — coordinator sets this
-    during graph builds to drain in-flight workers cleanly.
+    Runs until interrupted, or until *stop_event* is set. Workers check the
+    ``control`` table's ``workers_paused`` flag before each item — coordinator
+    sets this during graph builds to drain in-flight workers cleanly.
 
     Args:
         queue_dsn: PostgreSQL DSN for the queue/control tables.
@@ -109,6 +111,10 @@ def run_worker(
         run_ner: Whether to run NER on each document.
         spacy_model: spaCy model for NER.
         idle_sleep: Seconds to sleep when the queue is empty.
+        stop_event: Set it to end the loop. Without one the worker never returns,
+            so an in-process caller — a test, or any embedded worker — has no way
+            to shut it down and it keeps claiming work after the caller is done.
+            Also replaces the idle sleep, so a stop is noticed immediately.
     """
     import logging
     import socket
@@ -123,7 +129,14 @@ def run_worker(
 
     backend = PgVectorBackend(backend_dsn)
 
-    while True:
+    def _idle() -> bool:
+        """Sleep between polls; return True when the worker should stop."""
+        if stop_event is None:
+            time.sleep(idle_sleep)
+            return False
+        return stop_event.wait(idle_sleep)
+
+    while not (stop_event is not None and stop_event.is_set()):
         # Check pause flag
         with _pg_connect(queue_dsn) as qconn:
             with qconn.cursor() as cur:
@@ -131,7 +144,8 @@ def run_worker(
                 row = cur.fetchone()
             qconn.commit()
         if row and row[0] == "1":
-            time.sleep(idle_sleep)
+            if _idle():
+                break
             continue
 
         # Claim next pending item (SKIP LOCKED prevents double-assignment)
@@ -155,7 +169,8 @@ def run_worker(
             qconn.commit()
 
         if job is None:
-            time.sleep(idle_sleep)
+            if _idle():
+                break
             continue
 
         job_id, source_uri, namespace = job
