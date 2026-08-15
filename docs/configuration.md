@@ -461,6 +461,38 @@ CHONK_TEST_PG_DSN=postgresql://postgres:pw@localhost:5432/postgres pytest tests/
 `test_a_non_duckdb_backend_ran` fails if every non-DuckDB lane skipped, so a green
 run cannot mean "nothing was exercised".
 
+Pinecone is the one backend with no local option — it is SaaS-only and needs a
+real key and a live index, so that lane stays skip-gated.
+
+#### Cloud smoke tests and a stale `.env`
+
+`tests/integration/` also holds cloud smoke tests gated on service credentials
+(`WEAVIATE_URL`, `WEAVIATE_API_KEY`, and similar). These read the project `.env`,
+which `tests/integration/test_imap.py` loads at import time — so a credential set
+there is picked up by the whole run, not just the module that loaded it.
+
+A credential pointing at a **deleted** cluster is worse than an absent one: the
+gate sees the variable set and runs the test, which then fails on a connection
+error rather than skipping. A deleted Weaviate Cloud cluster answers every
+request — even an authenticated one — with a 301 to itself, so the failure reads
+as a redirect loop. Weaviate Cloud sandboxes expire after 14 days.
+
+Comment the variables out rather than leaving them pointing at a dead service.
+Backend behaviour is covered by the `weaviate-embedded` lane regardless; these
+smoke tests only exercise cloud connectivity.
+
+The same applies to the other live-service modules — `test_imap.py`,
+`test_gmail.py`, `test_sharepoint.py`, `test_s3.py`. They reach real third-party
+services, so they fail for reasons that have nothing to do with chonk: an expired
+token, a mailbox that moved, a network blip. Two consequences worth knowing:
+
+- **CI is unaffected.** The release workflow runs `tests/unit` only, so no gate
+  depends on a third-party service being up.
+- **Failure output can echo credentials.** A failing transport test prints the URI
+  it was called with, and for IMAP that URI embeds the password. Treat a failing
+  run's output as sensitive, and prefer commenting a credential out to leaving it
+  set but broken.
+
 ### Looking up an entity without its type
 
 Entity IDs are type-qualified, but callers should not have to know the prefix:
