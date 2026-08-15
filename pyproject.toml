@@ -1,6 +1,6 @@
 [project]
 name = "chonk-rag"
-version = "0.5.1"
+version = "0.5.2"
 description = "A dairy-free RAG pipeline for delicious semantic similarity, clustering and NER."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
@@ -122,6 +122,13 @@ dev = [
     "pip-audit>=2.9",
     "docker>=7,<8",
     "reportlab>=4,<5",
+    # Client-side engine: the backend-parity contract suite runs the Qdrant lane
+    # with qdrant_url=":memory:", so it needs no service anywhere.
+    "qdrant-client>=1.9,<2",
+    # The PG lane of that suite runs whenever CHONK_TEST_PG_DSN is set; CI sets it
+    # from a pgvector service container.
+    "psycopg2-binary>=2.9.12,<3",
+    "pgvector>=0.4.2,<1",
 ]
 
 [tool.pytest.ini_options]

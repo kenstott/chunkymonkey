@@ -420,6 +420,38 @@ Two things to know:
 - Types come straight off the entity ID (`customer:john_doe` → `customer`), so
   there is no join and no second source of truth.
 
+### Testing against non-DuckDB backends
+
+Backend behaviour diverges, and every parity defect found so far — a surviving
+`documents` registry row, `clear()` not cascading, DuckDB-only SQL on the NER
+write path — was invisible to a DuckDB-only run. The parity suite
+(`tests/unit/test_backend_registry_contract.py`) parametrizes over backends:
+
+| Lane | Requirement | Runs by default |
+| --- | --- | --- |
+| `duckdb` | none | yes |
+| `qdrant-local` | `qdrant-client` installed | yes — client-side engine, no server |
+| `pg` | `CHONK_TEST_PG_DSN` | when set |
+| `qdrant` / `pinecone` / `weaviate` | their service env var | when set |
+
+`qdrant-local` uses qdrant-client's embedded engine via `Store(qdrant_url=":memory:")`
+— pass `"file:/path/to/dir"` to persist instead. It supports every operation the
+backend issues; payload indexes are accepted and ignored there, which costs speed,
+not correctness.
+
+PostgreSQL needs a real server because `pgvector` supplies the `<=>` cosine
+operator — a stock `postgres` image will not do, and an embedded PostgreSQL only
+helps if the extension is compiled into it. CI runs a `pgvector/pgvector:pg16`
+service container; locally:
+
+```bash
+docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=pw pgvector/pgvector:pg16
+CHONK_TEST_PG_DSN=postgresql://postgres:pw@localhost:5432/postgres pytest tests/unit -q
+```
+
+`test_a_non_duckdb_backend_ran` fails if every non-DuckDB lane skipped, so a green
+run cannot mean "nothing was exercised".
+
 ### Looking up an entity without its type
 
 Entity IDs are type-qualified, but callers should not have to know the prefix:

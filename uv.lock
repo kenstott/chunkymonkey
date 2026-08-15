@@ -465,7 +465,7 @@ wheels = [
 
 [[package]]
 name = "chonk-rag"
-version = "0.5.1"
+version = "0.5.2"
 source = { editable = "." }
 dependencies = [
     { name = "sentence-transformers" },
@@ -587,7 +587,9 @@ dev = [
     { name = "json-repair" },
     { name = "json5" },
     { name = "langsmith" },
+    { name = "pgvector" },
     { name = "pip-audit" },
+    { name = "psycopg2-binary" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -595,6 +597,7 @@ dev = [
     { name = "pytest-docker" },
     { name = "pytest-timeout" },
     { name = "python-dotenv" },
+    { name = "qdrant-client" },
     { name = "reportlab" },
     { name = "respx" },
     { name = "rouge-score" },
@@ -675,7 +678,9 @@ dev = [
     { name = "json-repair", specifier = ">=0.60.1" },
     { name = "json5", specifier = ">=0.14" },
     { name = "langsmith", specifier = ">=0.8.9,<1" },
+    { name = "pgvector", specifier = ">=0.4.2,<1" },
     { name = "pip-audit", specifier = ">=2.9" },
+    { name = "psycopg2-binary", specifier = ">=2.9.12,<3" },
     { name = "pyright", specifier = ">=1.1.390,<2" },
     { name = "pytest", specifier = ">=9.0.3,<10" },
     { name = "pytest-asyncio", specifier = ">=1.4" },
@@ -683,6 +688,7 @@ dev = [
     { name = "pytest-docker", specifier = ">=3.2.5" },
     { name = "pytest-timeout", specifier = ">=2.4" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "qdrant-client", specifier = ">=1.9,<2" },
     { name = "reportlab", specifier = ">=4,<5" },
     { name = "respx", specifier = ">=0.23.1" },
     { name = "rouge-score", specifier = ">=0.1.2" },
