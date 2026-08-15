@@ -60,9 +60,12 @@ class EntityLookup:
         available_namespaces: Every namespace the name has evidence in, ignoring
             the requested filter. With an empty ``ids`` and a namespace filter
             set, this is what the caller should have asked for. Sorted.
-        near_matches: Entity ids whose name slug contains, or is contained by,
-            the queried one — typo and partial-name help. Excludes ``ids``.
-            Capped at ``NEAR_MATCH_LIMIT``; ``near_matches_truncated`` says so.
+        near_matches: Entity ids whose name slug contains the queried one, or is
+            contained by it — so both an under- and over-specified query gets
+            help ("mercury" finds mercury_systems; "mercury systems corp" finds
+            both). Compared on the slug only, never the type prefix. Excludes
+            ``ids``. Ordered by closeness in length, then id, and capped at
+            ``NEAR_MATCH_LIMIT``; ``near_matches_truncated`` says when more existed.
         near_matches_truncated: More near matches existed than were returned.
     """
 
@@ -75,6 +78,10 @@ class EntityLookup:
 
 
 NEAR_MATCH_LIMIT = 10
+
+# A stored slug shorter than this is not used for contained-by matching — a
+# two-character slug appears inside almost any query and would drown the result.
+_MIN_CONTAINED_SLUG = 3
 
 
 def _like_escape(value: str) -> str:
@@ -1272,11 +1279,24 @@ class Store:
             )
 
         exact = set(all_typed) | set(ids)
+        # Both directions, on the slug only:
+        #   contains     — stored slug holds the query ("mercury" -> mercury_systems)
+        #   contained by — query holds the stored slug ("mercury systems corp" -> both)
+        # strpos avoids treating a stored slug's "_" as a LIKE wildcard. Very short
+        # slugs are excluded from the contained-by arm or they match nearly anything.
         near = [
             r[0]
             for r in conn.execute(
-                "SELECT id FROM entities WHERE id LIKE ? ESCAPE '\\' ORDER BY id",
-                [f"%{escaped}%"],
+                """
+                SELECT id FROM entities
+                WHERE split_part(id, ':', 2) LIKE ? ESCAPE '\\'
+                   OR (
+                        length(split_part(id, ':', 2)) >= ?
+                        AND strpos(?, split_part(id, ':', 2)) > 0
+                   )
+                ORDER BY abs(length(split_part(id, ':', 2)) - ?), id
+                """,
+                [f"%{escaped}%", _MIN_CONTAINED_SLUG, slug, len(slug)],
             ).fetchall()
             if r[0] not in exact
         ]

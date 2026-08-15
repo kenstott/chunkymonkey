@@ -68,6 +68,8 @@ from .schema import ColumnMeta, EndpointMeta, FieldMeta, TableMeta
 from .search import EnhancedSearch, RetrievalTrace
 from .storage import (
     DuckDBVectorBackend,
+    EntityLookup,
+    NamespaceEvidence,
     PgVectorBackend,
     Store,
     SyncResult,
@@ -206,6 +208,8 @@ __all__ = [
     "VersionedRef",
     # Storage backends
     "Store",
+    "EntityLookup",
+    "NamespaceEvidence",
     "VectorBackend",
     "DuckDBVectorBackend",
     "PgVectorBackend",
