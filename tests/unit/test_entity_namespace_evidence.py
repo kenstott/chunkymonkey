@@ -303,6 +303,88 @@ class TestNamespaceFilteredLookup:
             )
 
 
+class TestNearMatches:
+    """Both directions, slug only, closest first."""
+
+    @pytest.fixture()
+    def populated(self, store):
+        for eid, etype in [
+            ("customer:mercury", "customer"),
+            ("element:mercury", "element"),
+            ("customer:mercury_systems", "customer"),
+            ("customer:acme_corp", "customer"),
+        ]:
+            store.vector._conn.execute(
+                "INSERT INTO entities(id, name, display_name, entity_type) VALUES (?, ?, ?, ?)",
+                [eid, eid.split(":")[1].replace("_", " "), eid, etype],
+            )
+        return store
+
+    def test_query_shorter_than_the_stored_name(self, populated):
+        assert populated.explain_entity_lookup("acme").near_matches == ["customer:acme_corp"]
+
+    def test_query_longer_than_the_stored_name(self, populated):
+        """Over-specification is the common typo case and used to return nothing."""
+        result = populated.explain_entity_lookup("mercury systems corp")
+        assert result.ids == []
+        assert result.near_matches == [
+            "customer:mercury_systems",
+            "customer:mercury",
+            "element:mercury",
+        ]
+
+    def test_type_prefix_is_not_matched(self, populated):
+        """Querying a type name must not return every entity of that type."""
+        assert populated.explain_entity_lookup("customer").near_matches == []
+
+    def test_ordered_by_closeness_in_length(self, populated):
+        result = populated.explain_entity_lookup("mercury systems corp")
+        lengths = [len(i.split(":")[1]) for i in result.near_matches]
+        assert lengths == sorted(lengths, key=lambda n: abs(n - len("mercury_systems_corp")))
+
+    def test_very_short_stored_slugs_do_not_match_everything(self, populated):
+        populated.vector._conn.execute(
+            "INSERT INTO entities(id, name, display_name, entity_type) "
+            "VALUES ('customer:ab', 'ab', 'AB', 'customer')"
+        )
+        assert "customer:ab" not in populated.explain_entity_lookup("acme corp").near_matches
+
+
+class TestPublicExports:
+    """Return types of public Store methods must be importable without a private path."""
+
+    def test_importable_from_the_package_root(self):
+        import chonk
+
+        assert chonk.EntityLookup is not None
+        assert chonk.NamespaceEvidence is not None
+        assert "EntityLookup" in chonk.__all__
+        assert "NamespaceEvidence" in chonk.__all__
+
+    def test_importable_from_chonk_storage(self):
+        import chonk.storage
+
+        assert "EntityLookup" in chonk.storage.__all__
+        assert "NamespaceEvidence" in chonk.storage.__all__
+
+    def test_they_are_the_same_objects(self):
+        import chonk
+        import chonk.storage
+        from chonk.storage._store import EntityLookup, NamespaceEvidence
+
+        assert chonk.EntityLookup is EntityLookup is chonk.storage.EntityLookup
+        assert chonk.NamespaceEvidence is NamespaceEvidence is chonk.storage.NamespaceEvidence
+
+    def test_returned_values_are_the_exported_types(self, store):
+        import chonk
+
+        store.vector._conn.execute(
+            "INSERT INTO entities(id, name, display_name, entity_type) "
+            "VALUES ('customer:acme', 'acme', 'Acme', 'customer')"
+        )
+        assert isinstance(store.explain_entity_lookup("acme"), chonk.EntityLookup)
+
+
 class TestLikeWildcardEscaping:
     """Name slugs contain '_', which is a LIKE single-character wildcard."""
 

@@ -20,12 +20,14 @@ from ._schema import (
     SchemaVersionError,
     get_ddl,
 )
-from ._store import Store
+from ._store import EntityLookup, NamespaceEvidence, Store
 from ._vector import DuckDBVectorBackend, SyncResult, prune_documents, sync_document
 from ._weaviate import WeaviateVectorBackend
 
 __all__ = [
     "Store",
+    "EntityLookup",
+    "NamespaceEvidence",
     "DuckDBVectorBackend",
     "PgVectorBackend",
     "PineconeVectorBackend",

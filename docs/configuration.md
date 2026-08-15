@@ -178,7 +178,17 @@ connection  = "postgresql://user:pass@host/db"
 sql         = "SELECT product_name FROM products"
 ```
 
-`entity_type` is the label assigned to matched spans (e.g. `"customer"`, `"employee"`, `"product"`). It is stored alongside each entity hit in `chunk_entities`.
+`entity_type` is the label assigned to matched spans (e.g. `"customer"`, `"employee"`, `"product"`).
+
+**`entity_type` is required for `static` and `db_query` entries, and must be omitted for `glossary`.** It is part of the entity id (`customer:acme_corp`), so a defaulted type would silently create a *different* entity than intended. A `glossary` entry always carries `term`, so setting `entity_type` there is rejected rather than ignored. Every malformed entry raises with the offending index — an entry that was skipped would leave the index looking successful with the vocabulary absent:
+
+```
+ValueError: vocab_entities[1]: unknown type 'lookup'. Expected one of db_query, glossary, static.
+ValueError: vocab_entities[0]: entity_type is required for type='static'. It is part of
+            the entity id, so defaulting it would create a different entity.
+```
+
+Also required: a non-empty `names` for `static`/`glossary`, and both `connection` and `sql` for `db_query`.
 
 A third type, `glossary`, adds business/glossary terms:
 
@@ -414,6 +424,10 @@ Two things to know:
 
 Entity IDs are type-qualified, but callers should not have to know the prefix:
 
+`EntityLookup` and `NamespaceEvidence` are exported from both `chonk` and
+`chonk.storage`, so callers can annotate against them without reaching into a
+private module.
+
 ```python
 store.resolve_entity_ids("Mercury")
 # ["customer:mercury", "element:mercury"]   ← every type, caller disambiguates
@@ -454,9 +468,12 @@ Both methods take the same `entity_type` and `namespaces` filters, so they alway
 answer the same question. `namespaces` is an *evidence* filter — where the entity
 actually appears, the same notion `get_entity_namespace_evidence()` reports — not
 where its vocabulary was declared. `None` applies no restriction; `[]` matches
-nothing, mirroring `search`. `near_matches`
-helps with typos and partial names; it is capped at `NEAR_MATCH_LIMIT` and
-`near_matches_truncated` says when more existed, rather than silently trimming.
+nothing, mirroring `search`. `near_matches` helps with typos and partial names, in both directions — an
+under-specified query (`"mercury"` → `customer:mercury_systems`) and an
+over-specified one (`"mercury systems corp"` → both). Comparison is on the name
+slug only, so querying a type name like `"customer"` does not return every
+`customer:*`. Ordered by closeness in length, capped at `NEAR_MATCH_LIMIT`, with
+`near_matches_truncated` saying when more existed rather than silently trimming.
 
 An empty result is only trustworthy because nothing upstream can manufacture one:
 a malformed `vocab_entities` entry raises at build time instead of being dropped,
