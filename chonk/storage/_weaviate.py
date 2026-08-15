@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from ..models import DocumentChunk
@@ -34,6 +35,11 @@ if TYPE_CHECKING:
 from . import _cascade
 
 logger = logging.getLogger(__name__)
+
+# Sentinel URL selecting weaviate-client's embedded binary instead of a server.
+EMBEDDED_URL = "embedded"
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+DEFAULT_GRPC_PORT = 50051
 
 _MISSING_DEPS_MSG = (
     "weaviate-client>=4 is required for WeaviateVectorBackend. "
@@ -320,12 +326,20 @@ class WeaviateVectorBackend:
         collection: str = "Chonk",
         embedding_dim: int = 1024,
         catalog_path: str = ":memory:",
+        grpc_port: int = DEFAULT_GRPC_PORT,
+        local_port: int = 8079,
+        persistence_path: str | None = None,
     ) -> None:
         _require_deps()
         self._collection_name = collection
         self._embedding_dim = embedding_dim
         self._fts_dirty = False
         self._global_attached = False
+        # Only consulted for the embedded and loopback connection paths; Weaviate
+        # Cloud derives both ports from the cluster URL.
+        self._grpc_port = grpc_port
+        self._local_port = local_port
+        self._persistence_path = persistence_path
 
         self._catalog = self._open_catalog(catalog_path)
         self._client = self._connect(cluster_url, api_key)
@@ -355,8 +369,30 @@ class WeaviateVectorBackend:
         return conn
 
     def _connect(self, cluster_url: str, api_key: str) -> Any:  # noqa: ANN401
+        """Connect to Weaviate Cloud, a local server, or the embedded engine.
+
+        ``"embedded"`` starts weaviate-client's bundled binary; an ``http://``
+        URL on a loopback host connects to a server already running there. Both
+        exist so this backend can be exercised without a cloud account — every
+        parity defect found so far was invisible to a DuckDB-only run.
+        """
         import weaviate
         from weaviate.classes.init import Auth
+
+        if cluster_url == EMBEDDED_URL:
+            return weaviate.connect_to_embedded(
+                port=self._local_port,
+                grpc_port=self._grpc_port,
+                persistence_data_path=self._persistence_path,
+            )
+
+        parsed = urlparse(cluster_url)
+        if parsed.hostname in _LOOPBACK_HOSTS:
+            return weaviate.connect_to_local(
+                host=parsed.hostname,
+                port=parsed.port or 8080,
+                grpc_port=self._grpc_port,
+            )
 
         return weaviate.connect_to_weaviate_cloud(
             cluster_url=cluster_url,

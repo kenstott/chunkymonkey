@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import inspect
 import os
+import socket
+import tempfile
+import uuid
 
 import numpy as np
 import pytest
@@ -40,11 +43,64 @@ _SERVICE_BACKENDS = {
 }
 
 
-@pytest.fixture(params=["duckdb", *_LOCAL_BACKENDS, *_SERVICE_BACKENDS])
+def _free_port() -> int:
+    """Reserve an ephemeral port so parallel runs do not collide."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+@pytest.fixture(scope="session")
+def weaviate_embedded():
+    """Start weaviate-client's embedded binary once for the session.
+
+    Started once rather than per test: startup takes seconds and occasionally
+    times out, so a per-test start would make the lane slow and flaky. Tests
+    isolate themselves with a fresh collection name instead.
+    """
+    weaviate = pytest.importorskip("weaviate")
+    from weaviate.config import AdditionalConfig, Timeout
+
+    http_port, grpc_port = _free_port(), _free_port()
+    with tempfile.TemporaryDirectory() as data_dir:
+        try:
+            client = weaviate.connect_to_embedded(
+                port=http_port,
+                grpc_port=grpc_port,
+                persistence_data_path=data_dir,
+                additional_config=AdditionalConfig(timeout=Timeout(init=90, query=90, insert=90)),
+            )
+        except Exception as exc:  # noqa: BLE001 — startup is environmental
+            pytest.skip(f"embedded Weaviate did not start: {exc}")
+        try:
+            yield http_port, grpc_port
+        finally:
+            client.close()
+
+
+@pytest.fixture(params=["duckdb", *_LOCAL_BACKENDS, "weaviate-embedded", *_SERVICE_BACKENDS])
 def backend(request):
     from chonk.storage import Store
 
     name = request.param
+
+    if name == "weaviate-embedded":
+        http_port, grpc_port = request.getfixturevalue("weaviate_embedded")
+        # A fresh collection per test: the server outlives individual tests.
+        collection = f"Chonk{uuid.uuid4().hex[:12]}"
+        with Store(
+            embedding_dim=4,
+            weaviate_url=f"http://127.0.0.1:{http_port}",
+            weaviate_grpc_port=grpc_port,
+            weaviate_collection=collection,
+        ) as store:
+            _RAN.add(name)
+            try:
+                yield store.vector
+            finally:
+                store.vector._client.collections.delete(collection)
+        return
+
     if name == "duckdb":
         with Store(":memory:", embedding_dim=4) as store:
             _RAN.add(name)

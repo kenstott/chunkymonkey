@@ -465,7 +465,7 @@ wheels = [
 
 [[package]]
 name = "chonk-rag"
-version = "0.5.2"
+version = "0.5.3"
 source = { editable = "." }
 dependencies = [
     { name = "sentence-transformers" },
@@ -602,6 +602,7 @@ dev = [
     { name = "respx" },
     { name = "rouge-score" },
     { name = "ruff" },
+    { name = "weaviate-client" },
 ]
 
 [package.metadata]
@@ -693,6 +694,7 @@ dev = [
     { name = "respx", specifier = ">=0.23.1" },
     { name = "rouge-score", specifier = ">=0.1.2" },
     { name = "ruff", specifier = ">=0.15.16,<1" },
+    { name = "weaviate-client", specifier = ">=4,<5" },
 ]
 
 [[package]]
