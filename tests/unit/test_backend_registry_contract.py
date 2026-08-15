@@ -25,6 +25,12 @@ from chonk.storage import prune_documents, sync_document
 
 _RAN: set[str] = set()
 
+# Backends with a client-side engine: no server, no env var, so they run in an
+# ordinary test session. Skipped only when the client library is absent.
+_LOCAL_BACKENDS = {
+    "qdrant-local": ("qdrant_client", {"qdrant_url": ":memory:"}),
+}
+
 # name -> (env var gating the live service, client module that must import)
 _SERVICE_BACKENDS = {
     "pg": ("CHONK_TEST_PG_DSN", "psycopg2"),
@@ -34,13 +40,21 @@ _SERVICE_BACKENDS = {
 }
 
 
-@pytest.fixture(params=["duckdb", *_SERVICE_BACKENDS])
+@pytest.fixture(params=["duckdb", *_LOCAL_BACKENDS, *_SERVICE_BACKENDS])
 def backend(request):
     from chonk.storage import Store
 
     name = request.param
     if name == "duckdb":
         with Store(":memory:", embedding_dim=4) as store:
+            _RAN.add(name)
+            yield store.vector
+        return
+
+    if name in _LOCAL_BACKENDS:
+        module, kwargs = _LOCAL_BACKENDS[name]
+        pytest.importorskip(module)
+        with Store(embedding_dim=4, **kwargs) as store:
             _RAN.add(name)
             yield store.vector
         return
@@ -273,6 +287,110 @@ class TestClearCascadesLive:
             assert backend._scalar(f"SELECT COUNT(*) FROM {table}", []) == 0, table  # noqa: S608
 
 
+class TestEntityTypesContract:
+    """entity_types is denormalised per backend; each stores and filters it differently.
+
+    DuckDB uses a list column, PG a TEXT[], and the external backends payload or
+    metadata — so this is exactly the kind of divergence a DuckDB-only run hides.
+    """
+
+    def _seed(self, backend) -> list[str]:
+        from chonk.models import DocumentChunk
+
+        backend.add_chunks(
+            [
+                DocumentChunk(
+                    document_name="doc_a", content="john doe bought a drill", chunk_index=0
+                ),
+                DocumentChunk(document_name="doc_b", content="acme corp filed", chunk_index=0),
+            ],
+            np.ones((2, 4), dtype="float32"),
+        )
+        return [
+            backend._make_chunk_id("doc_a", 0, "john doe bought a drill")
+            if hasattr(backend, "_make_chunk_id")
+            else c
+            for c in sorted(
+                r[0]
+                for r in backend._conn.execute(
+                    "SELECT chunk_id FROM embeddings ORDER BY document_name"
+                ).fetchall()
+            )
+        ]
+
+    def _chunk_ids(self, backend) -> list[str]:
+        rows = backend._conn.execute(
+            "SELECT chunk_id FROM embeddings ORDER BY document_name"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def test_written_types_filter_the_search(self, backend):
+        self._seed(backend)
+        ids = self._chunk_ids(backend)
+        assert backend.set_chunk_entity_types({ids[0]: ["customer"], ids[1]: ["org"]}) == 2
+
+        query = np.ones(4, dtype="float32")
+        customer = backend.search(query, limit=10, entity_types=["customer"])
+        assert [c.document_name for _, _, c in customer] == ["doc_a"]
+
+    def test_any_overlap_semantics(self, backend):
+        self._seed(backend)
+        ids = self._chunk_ids(backend)
+        backend.set_chunk_entity_types({ids[0]: ["customer"], ids[1]: ["org"]})
+        hits = backend.search(
+            np.ones(4, dtype="float32"), limit=10, entity_types=["customer", "org"]
+        )
+        assert sorted(c.document_name for _, _, c in hits) == ["doc_a", "doc_b"]
+
+    def test_chunks_without_types_match_nothing(self, backend):
+        self._seed(backend)
+        assert (
+            backend.search(np.ones(4, dtype="float32"), limit=10, entity_types=["customer"]) == []
+        )
+
+    def test_unknown_type_matches_nothing(self, backend):
+        self._seed(backend)
+        ids = self._chunk_ids(backend)
+        backend.set_chunk_entity_types({ids[0]: ["customer"]})
+        assert backend.search(np.ones(4, dtype="float32"), limit=10, entity_types=["ghost"]) == []
+
+    def test_empty_mapping_is_a_noop(self, backend):
+        assert backend.set_chunk_entity_types({}) == 0
+
+    def test_exclude_chunk_types_is_honoured(self, backend):
+        from chonk.models import DocumentChunk
+        from chonk.storage._schema import SYNTHETIC_CHUNK_TYPES
+
+        backend.add_chunks(
+            [
+                DocumentChunk(document_name="doc_a", content="real text", chunk_index=0),
+                DocumentChunk(
+                    document_name="__entity__x",
+                    content="entity card",
+                    chunk_index=0,
+                    chunk_type="entity",
+                ),
+            ],
+            np.ones((2, 4), dtype="float32"),
+        )
+        query = np.ones(4, dtype="float32")
+        assert len(backend.search(query, limit=10)) == 2
+        kept = backend.search(query, limit=10, exclude_chunk_types=SYNTHETIC_CHUNK_TYPES)
+        assert [c.chunk_type for _, _, c in kept] == ["document"]
+
+
 def test_at_least_duckdb_ran():
     """Fail loudly if the parametrized suite degraded to all-skips."""
     assert "duckdb" in _RAN
+
+
+def test_a_non_duckdb_backend_ran():
+    """DuckDB alone proves nothing about the backends that diverged.
+
+    Every parity defect so far — the documents registry row, the clear() cascade,
+    DuckDB-only SQL on the NER write path — was invisible to a DuckDB-only run.
+    qdrant-local needs no service, so this only fails if its client is missing.
+    """
+    assert _RAN - {"duckdb"}, (
+        "no non-DuckDB backend ran: install the qdrant extra, or set a service env var"
+    )

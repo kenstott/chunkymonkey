@@ -26,6 +26,27 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    # Without this the PostgreSQL lane of the backend-parity suite skips, and it
+    # has skipped on every release so far. Every parity defect found to date —
+    # the documents registry row, the clear() cascade, DuckDB-only SQL on the NER
+    # write path — was invisible to a DuckDB-only run. pgvector is what supplies
+    # the <=> cosine operator, so the stock postgres image will not do.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: chonk_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -51,7 +72,21 @@ jobs:
         run: uv run python -m spacy download en_core_web_sm
 
       - name: Run tests
+        env:
+          CHONK_TEST_PG_DSN: postgresql://postgres:postgres@localhost:5432/chonk_test
         run: uv run pytest tests/unit -q
+
+      # A green run proves nothing if the backend lanes quietly skipped.
+      - name: Assert the PostgreSQL lane actually ran
+        env:
+          CHONK_TEST_PG_DSN: postgresql://postgres:postgres@localhost:5432/chonk_test
+        run: |
+          uv run pytest tests/unit/test_backend_registry_contract.py -q -rs \
+            | tee /tmp/contract.txt
+          if grep -q "pg: set CHONK_TEST_PG_DSN" /tmp/contract.txt; then
+            echo "PostgreSQL lane skipped despite a service container" >&2
+            exit 1
+          fi
 
       - name: Build sdist and wheel
         run: uv build

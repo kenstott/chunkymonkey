@@ -34,6 +34,10 @@ from . import _cascade
 
 logger = logging.getLogger(__name__)
 
+# Sentinel URLs selecting qdrant-client's embedded engine instead of a server.
+LOCAL_MEMORY_URL = ":memory:"
+LOCAL_FILE_PREFIX = "file:"
+
 _MISSING_DEPS_MSG = (
     "qdrant-client is required for QdrantVectorBackend. "
     "Install it with: pip install chonk-rag[qdrant]"
@@ -248,7 +252,9 @@ class QdrantVectorBackend:
     them from Qdrant when convenient.
 
     Args:
-        url: Qdrant server URL, e.g. ``"http://localhost:6333"``.
+        url: Qdrant server URL, e.g. ``"http://localhost:6333"``. Pass
+            ``":memory:"`` or ``"file:/path/to/dir"`` to use the embedded local
+            engine with no server.
         collection: Qdrant collection name (created automatically if absent).
         embedding_dim: Embedding vector dimension. Must match your model.
         catalog_path: Path to the DuckDB catalog file, or ``":memory:"``.
@@ -275,6 +281,7 @@ class QdrantVectorBackend:
         self._global_attached = False
 
         self._catalog = self._open_catalog(catalog_path)
+        self._local = url == LOCAL_MEMORY_URL or url.startswith(LOCAL_FILE_PREFIX)
         self._client = self._connect_qdrant(url, api_key, prefer_grpc)
         self._init_collection()
         self._load_fts_ext()
@@ -304,8 +311,20 @@ class QdrantVectorBackend:
         return conn
 
     def _connect_qdrant(self, url: str, api_key: str | None, prefer_grpc: bool) -> Any:  # noqa: ANN401
+        """Connect to a Qdrant server, or run the client-side local engine.
+
+        ``url=":memory:"`` and ``url="file:/path"`` use qdrant-client's embedded
+        engine — no server, no network. That makes this backend testable in an
+        ordinary test run instead of only when someone has a service configured.
+        Local mode supports every operation this backend issues; payload indexes
+        are accepted and ignored, which costs speed, not correctness.
+        """
         from qdrant_client import QdrantClient
 
+        if url == LOCAL_MEMORY_URL:
+            return QdrantClient(location=LOCAL_MEMORY_URL)
+        if url.startswith(LOCAL_FILE_PREFIX):
+            return QdrantClient(path=url[len(LOCAL_FILE_PREFIX) :])
         return QdrantClient(url=url, api_key=api_key, prefer_grpc=prefer_grpc)
 
     def _load_fts_ext(self) -> None:
@@ -330,7 +349,11 @@ class QdrantVectorBackend:
                 "Created Qdrant collection %r (dim=%d)", self._collection, self._embedding_dim
             )
             # Keyword payload index backs search(entity_types=[...]); without it
-            # Qdrant falls back to a full payload scan for that condition.
+            # Qdrant falls back to a full payload scan for that condition. The
+            # local engine ignores payload indexes, so asking for one there only
+            # produces a warning about a speed-up that does not apply.
+            if self._local:
+                return
             from qdrant_client.models import PayloadSchemaType
 
             self._client.create_payload_index(
