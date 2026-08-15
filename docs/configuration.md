@@ -431,6 +431,7 @@ write path — was invisible to a DuckDB-only run. The parity suite
 | --- | --- | --- |
 | `duckdb` | none | yes |
 | `qdrant-local` | `qdrant-client` installed | yes — client-side engine, no server |
+| `weaviate-embedded` | `weaviate-client` installed | yes — bundled binary, no server |
 | `pg` | `CHONK_TEST_PG_DSN` | when set |
 | `qdrant` / `pinecone` / `weaviate` | their service env var | when set |
 
@@ -438,6 +439,14 @@ write path — was invisible to a DuckDB-only run. The parity suite
 — pass `"file:/path/to/dir"` to persist instead. It supports every operation the
 backend issues; payload indexes are accepted and ignored there, which costs speed,
 not correctness.
+
+`weaviate-embedded` runs weaviate-client's bundled binary. `Store(weaviate_url="embedded")`
+starts one; an `http://` URL on a loopback host connects to a server already running
+(`weaviate_grpc_port`, `weaviate_local_port`, and `weaviate_persistence_path` configure
+both paths). The test fixture starts one server per session on ephemeral ports and gives
+each test a fresh collection — startup takes seconds and occasionally times out, so a
+per-test start would be slow and flaky. If it fails to start, the lane skips rather than
+failing the run.
 
 PostgreSQL needs a real server because `pgvector` supplies the `<=>` cosine
 operator — a stock `postgres` image will not do, and an embedded PostgreSQL only

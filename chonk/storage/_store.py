@@ -131,6 +131,9 @@ class Store:
         weaviate_api_key: str | None = None,
         weaviate_collection: str = "Chonk",
         weaviate_catalog_path: str = ":memory:",
+        weaviate_grpc_port: int = 50051,
+        weaviate_local_port: int = 8079,
+        weaviate_persistence_path: str | None = None,
     ) -> None:
         """Create a Store.
 
@@ -157,9 +160,13 @@ class Store:
                  (e.g. ``"https://abc.c0.us-east-1.aws.weaviate.cloud"``).
                  When set, uses WeaviateVectorBackend. Takes precedence over
                  ``pinecone_api_key``, ``qdrant_url``, and ``dsn``.
-            weaviate_api_key: Weaviate Cloud API key.
+            weaviate_api_key: Weaviate Cloud API key. Not needed for the embedded
+                 or loopback paths.
             weaviate_collection: Weaviate collection name (default: ``"Chonk"``).
             weaviate_catalog_path: DuckDB catalog file for Weaviate backend metadata.
+            weaviate_grpc_port: gRPC port for the embedded/loopback paths.
+            weaviate_local_port: HTTP port the embedded engine listens on.
+            weaviate_persistence_path: Data directory for the embedded engine.
         """
         if weaviate_url is not None:
             from ._weaviate import WeaviateVectorBackend
@@ -171,6 +178,9 @@ class Store:
                 collection=weaviate_collection,
                 embedding_dim=embedding_dim,
                 catalog_path=weaviate_catalog_path,
+                grpc_port=weaviate_grpc_port,
+                local_port=weaviate_local_port,
+                persistence_path=weaviate_persistence_path,
             )
             assert isinstance(self.vector, VectorBackend)
             self.relational = None  # type: ignore
