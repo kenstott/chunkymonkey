@@ -493,6 +493,23 @@ token, a mailbox that moved, a network blip. Two consequences worth knowing:
   run's output as sensitive, and prefer commenting a credential out to leaving it
   set but broken.
 
+#### Stopping an in-process worker
+
+`run_worker()` takes an optional `stop_event`. Without one it never returns, so an
+in-process caller has no way to shut it down:
+
+```python
+stop = threading.Event()
+threading.Thread(target=run_worker, args=(dsn, dsn), kwargs={"stop_event": stop}).start()
+...
+stop.set()   # returns promptly — the event also replaces the idle sleep
+```
+
+This matters beyond tidiness. A worker left running keeps claiming queue items, so
+it races anything that expects the queue to hold still — including a coordinator
+that pauses workers *after* enqueuing, which loses that race whenever the machine
+is loaded.
+
 ### Looking up an entity without its type
 
 Entity IDs are type-qualified, but callers should not have to know the prefix:

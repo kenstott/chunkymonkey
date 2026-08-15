@@ -737,6 +737,47 @@ class TestWorkerCoordinatorTandem:
     _TIMEOUT = 120  # seconds to wait for queue to drain
 
     @pytest.fixture()
+    def worker_pool(self):
+        """Start workers that are guaranteed to stop when the test ends.
+
+        A worker left running polls the queue every idle_sleep for the rest of
+        the session. It then races the next test — claiming a job before that
+        test can set workers_paused — and races the backend fixture, which drops
+        and recreates the embeddings table underneath it.
+        """
+        import threading
+
+        from chonk.ingest import run_worker  # noqa: PLC0415
+
+        stop = threading.Event()
+        threads: list[threading.Thread] = []
+        errors: list[Exception] = []
+
+        def start(dsn: str) -> None:
+            def _run() -> None:
+                try:
+                    run_worker(
+                        dsn,
+                        dsn,
+                        embed_model=self._EMBED_MODEL,
+                        idle_sleep=0.2,
+                        stop_event=stop,
+                    )
+                except Exception as exc:  # noqa: BLE001 — surfaced by the caller
+                    errors.append(exc)
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            threads.append(t)
+
+        start.errors = errors  # type: ignore[attr-defined]
+        yield start
+        stop.set()
+        for t in threads:
+            t.join(timeout=30)
+            assert not t.is_alive(), "worker did not stop; it would leak into the next test"
+
+    @pytest.fixture()
     def backend(self, pg_dsn: str) -> Generator[PgVectorBackend, None, None]:
         # all-MiniLM-L6-v2 produces 384-dim vectors; drop and recreate the
         # embeddings table so the column type matches before the worker runs.
@@ -802,12 +843,10 @@ class TestWorkerCoordinatorTandem:
         return _queue_pending_count(pg_dsn) == 0 and _queue_processing_count(pg_dsn) == 0
 
     def test_worker_processes_enqueued_docs(
-        self, pg_dsn: str, backend: PgVectorBackend, doc_files: dict
+        self, pg_dsn: str, backend: PgVectorBackend, doc_files: dict, worker_pool
     ) -> None:
         """run_worker() ingests real documents and builds embeddings in PG."""
-        import threading
-
-        from chonk.ingest import _pg_connect, run_worker  # noqa: PLC0415
+        from chonk.ingest import _pg_connect  # noqa: PLC0415
 
         # Enqueue both documents
         with _pg_connect(pg_dsn) as conn:
@@ -819,22 +858,8 @@ class TestWorkerCoordinatorTandem:
                     )
             conn.commit()
 
-        # Run worker in a daemon thread; it will sleep idle_sleep between polls
-        worker_exc: list[Exception] = []
-
-        def _worker() -> None:
-            try:
-                run_worker(
-                    pg_dsn,
-                    pg_dsn,
-                    embed_model=self._EMBED_MODEL,
-                    idle_sleep=0.2,
-                )
-            except Exception as exc:
-                worker_exc.append(exc)
-
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
+        worker_pool(pg_dsn)
+        worker_exc = worker_pool.errors
 
         # Poll until queue drains or timeout
         deadline = time.monotonic() + self._TIMEOUT
@@ -843,7 +868,6 @@ class TestWorkerCoordinatorTandem:
                 break
             time.sleep(0.5)
 
-        # Worker is an infinite loop — leave as daemon (dies with process)
         assert not worker_exc, f"Worker raised: {worker_exc[0]}"
         assert self._all_done(pg_dsn), "Queue did not drain within timeout"
 
@@ -861,7 +885,7 @@ class TestWorkerCoordinatorTandem:
         assert len(results) >= 1
 
     def test_coordinator_pauses_worker_during_graph_build(
-        self, pg_dsn: str, backend: PgVectorBackend, doc_files: dict
+        self, pg_dsn: str, backend: PgVectorBackend, doc_files: dict, worker_pool
     ) -> None:
         """Coordinator sets workers_paused=1 before graph build; worker halts claiming."""
         import threading
@@ -870,10 +894,13 @@ class TestWorkerCoordinatorTandem:
             _pg_connect,
             _queue_pending_count,
             _set_control,
-            run_worker,
         )
 
-        # Enqueue one document
+        # Pause first, then enqueue. Enqueuing first leaves a window in which any
+        # running worker claims the job before the flag lands, which is the
+        # coordinator ordering this test exists to assert anyway.
+        _set_control(pg_dsn, "workers_paused", "1")
+
         path = next(iter(doc_files.values()))
         with _pg_connect(pg_dsn) as conn:
             with conn.cursor() as cur:
@@ -882,9 +909,6 @@ class TestWorkerCoordinatorTandem:
                     [path, "coord_ns"],
                 )
             conn.commit()
-
-        # Pause workers before starting the thread
-        _set_control(pg_dsn, "workers_paused", "1")
 
         claimed: list[bool] = []
 
@@ -910,16 +934,8 @@ class TestWorkerCoordinatorTandem:
         # Coordinator unpauses — now worker can proceed
         _set_control(pg_dsn, "workers_paused", "0")
 
-        worker_exc: list[Exception] = []
-
-        def _worker2() -> None:
-            try:
-                run_worker(pg_dsn, pg_dsn, embed_model=self._EMBED_MODEL, idle_sleep=0.2)
-            except Exception as exc:
-                worker_exc.append(exc)
-
-        t2 = threading.Thread(target=_worker2, daemon=True)
-        t2.start()
+        worker_pool(pg_dsn)
+        worker_exc = worker_pool.errors
 
         deadline = time.monotonic() + self._TIMEOUT
         while time.monotonic() < deadline:
