@@ -755,11 +755,22 @@ class TestWorkerCoordinatorTandem:
 
     @pytest.fixture(autouse=True)
     def _clean(self, pg_dsn: str) -> Generator[None, None, None]:
+        """Empty the worker tables, tolerating a database with no schema yet.
+
+        This is autouse, so it runs before the ``backend`` fixture that creates
+        the schema. Truncating unconditionally made the class pass only when an
+        earlier test in the module had already built the tables — running it
+        alone errored at setup.
+        """
         from chonk.ingest import _pg_connect  # noqa: PLC0415
 
         with _pg_connect(pg_dsn) as conn:
             with conn.cursor() as cur:
-                cur.execute("TRUNCATE documents, svo_triples, ingest_queue, control")
+                for table in ("documents", "svo_triples", "ingest_queue", "control"):
+                    cur.execute("SELECT to_regclass(%s)", [table])
+                    row = cur.fetchone()
+                    if row is not None and row[0] is not None:
+                        cur.execute(f"TRUNCATE {table}")  # noqa: S608
             conn.commit()
         yield
 
